@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>招聘沟通记录</title>
+  <style>
+    body { margin: 0; background: #f6f7f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; }
+    header { padding: 20px 28px; background: white; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 10; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    .meta { color: #6b7280; font-size: 13px; }
+    main { padding: 20px 28px; }
+    .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+    button { border: 0; border-radius: 8px; padding: 9px 12px; font-size: 14px; cursor: pointer; background: #111827; color: white; }
+    button.secondary { background: #16a085; }
+    button.light { background: #374151; }
+    .filter-box { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; padding: 8px 12px; background: white; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; user-select: none; }
+    .filter-box input { width: 16px; height: 16px; }
+    .hint { color: #6b7280; font-size: 13px; margin-left: 8px; }
+    pre { background: #111827; color: #f9fafb; border-radius: 12px; padding: 18px; overflow: auto; line-height: 1.5; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; background: white; margin-bottom: 18px; border-radius: 12px; overflow: hidden; table-layout: fixed; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; font-size: 13px; vertical-align: top; word-break: break-word; }
+    th { background: #f3f4f6; font-weight: 600; }
+    th.company, td.company-cell { width: 16%; }
+    th.job, td.job-cell { width: 22%; }
+    th.time, td.time-cell { width: 8%; }
+    th.note, td.note-cell { width: 14%; }
+    th.recruiter, td.recruiter-cell { width: 12%; }
+    th.message, td.message-cell { width: 28%; }
+    td.editable { cursor: text; min-height: 20px; }
+    td.editable:hover { background: #fff7ed; }
+    td.editable.editing { background: #fffbeb; outline: 2px solid #f59e0b; outline-offset: -2px; }
+    .empty { background: white; border-radius: 12px; padding: 18px; color: #6b7280; }
+    .section-title { margin: 18px 0 8px; font-size: 14px; color: #374151; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="pageHeading">招聘沟通记录</h1>
+    <div id="meta" class="meta"></div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <button id="copyTableBtn">复制表格</button>
+      <button id="copyJsonBtn" class="light">复制 JSON</button>
+      <button id="downloadCsvBtn" class="secondary">下载 CSV</button>
+      <button id="downloadJsonBtn" class="secondary">下载 JSON</button>
+      <label class="filter-box">
+        <input id="todayOnly" type="checkbox" />
+        只显示今天沟通
+      </label>
+      <span class="hint">沟通时间统一显示为日期；岗位和备注列可双击编辑。复制表格使用制表符分隔，适合直接粘贴到 Numbers/Excel。</span>
+    </div>
+    <div id="tableBox"></div>
+    <div class="section-title">JSON 预览</div>
+    <pre id="jsonBox">loading...</pre>
+  </main>
+  <script src="results.js"></script>
+</body>
+</html>

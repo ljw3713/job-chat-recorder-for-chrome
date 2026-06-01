@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "招聘沟通记录统计器",
+  "version": "1.3.0",
+  "description": "轻松更新沟通记录。当前支持 BOSS直聘 zhipin.com，支持表格、CSV 和 JSON 导出。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.zhipin.com/*"
+  ],
+  "action": {
+    "default_title": "统计招聘沟通记录",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.zhipin.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  }
+}
