@@ -280,12 +280,27 @@
     return headers;
   }
 
-  function bossLegacyFriendKey(item) {
-    return item?.encryptBossId || item?.encryptUid || item?.uid || item?.jobId || item?.lastMessageInfo?.msgId || '';
+  function bossIdOfItem(item) {
+    return item?.encryptBossId || item?.encryptUid || '';
+  }
+
+  function bossRecordKeyParts(bossId, jobId) {
+    const normalizedBossId = normalizeText(bossId).toLowerCase();
+    const normalizedJobId = normalizeText(jobId).toLowerCase();
+    if (normalizedBossId && normalizedJobId) return `${normalizedBossId}|${normalizedJobId}`;
+    return normalizedBossId || normalizedJobId || '';
+  }
+
+  function bossItemRecordKey(item) {
+    return bossRecordKeyParts(bossIdOfItem(item), item?.jobId);
+  }
+
+  function bossRecordRecordKey(record) {
+    return bossRecordKeyParts(record?.boss?.encryptBossId || record?.boss?.bossId, record?.boss?.jobId);
   }
 
   function bossFriendKey(item) {
-    return bossLegacyFriendKey(item) || item?.encryptFriendId || item?.friendId || '';
+    return bossItemRecordKey(item) || bossIdOfItem(item) || item?.uid || item?.jobId || item?.lastMessageInfo?.msgId || item?.encryptFriendId || item?.friendId || '';
   }
 
   function addBossKeyVariants(keys, value) {
@@ -301,6 +316,11 @@
   }
 
   function addBossRecordKeys(keys, record) {
+    const primaryKey = bossRecordRecordKey(record);
+    if (primaryKey) {
+      addBossKeyVariants(keys, primaryKey);
+      return;
+    }
     [
       record?.boss?.contactKey,
       record?.boss?.encryptBossId,
@@ -309,10 +329,22 @@
     ].forEach((key) => addBossKeyVariants(keys, key));
   }
 
+  function addBossRecordToMap(map, record) {
+    const keys = new Set();
+    addBossRecordKeys(keys, record);
+    keys.forEach((key) => {
+      if (!map.has(key)) map.set(key, record);
+    });
+  }
+
   function bossItemKeys(item) {
     const keys = new Set();
+    const primaryKey = bossItemRecordKey(item);
+    if (primaryKey) {
+      addBossKeyVariants(keys, primaryKey);
+      return [...keys];
+    }
     [
-      bossLegacyFriendKey(item),
       item?.encryptBossId,
       item?.encryptUid,
       item?.uid,
@@ -322,6 +354,27 @@
       item?.friendId
     ].forEach((key) => addBossKeyVariants(keys, key));
     return [...keys];
+  }
+
+  function bossLastMsgIdFromRecord(record) {
+    return normalizeText(record?.boss?.lastMsgId || record?.boss?.lastMessageInfo?.msgId);
+  }
+
+  function bossLastMsgIdFromItem(item) {
+    return normalizeText(item?.lastMessageInfo?.msgId);
+  }
+
+  function findBossRecordByItem(map, item) {
+    return bossItemKeys(item).map((key) => map.get(key)).find(Boolean) || null;
+  }
+
+  function shouldSyncBossItem(item, savedMap, pendingMap) {
+    if (findBossRecordByItem(pendingMap, item)) return false;
+    const saved = findBossRecordByItem(savedMap, item);
+    if (!saved) return true;
+    const oldMsgId = bossLastMsgIdFromRecord(saved);
+    const newMsgId = bossLastMsgIdFromItem(item);
+    return Boolean(oldMsgId && newMsgId && oldMsgId !== newMsgId);
   }
 
   async function readExistingBossPending() {
@@ -445,7 +498,7 @@
     const fallbackJobName = htmlDecode(extractJobName(lastMessage));
     const jobName = bossJobText(job.jobName || item.jobName || fallbackJobName, job.salaryDesc || '');
     const companyName = htmlDecode(data.companyName || job.brandName || item.brandName || '');
-    const ts = Number(item.updateTime || item.lastMessageInfo?.msgTime || item.lastTS || Date.now());
+    const ts = Number(item.lastMessageInfo?.msgTime || item.updateTime || item.lastTS || Date.now());
     return {
       index: index + 1,
       time: formatDate(new Date(ts)),
@@ -488,20 +541,19 @@
     const pendingRecords = pending?.siteKey === 'boss' && Array.isArray(pending.records) ? pending.records : [];
     const savedRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords.filter((record) => record?.siteKey === 'boss' || record?.sourceName === 'BOSS直聘') : [];
 
-    const savedKeys = new Set();
+    const savedMap = new Map();
     savedRecords.forEach((record) => {
-      addBossRecordKeys(savedKeys, record);
+      addBossRecordToMap(savedMap, record);
     });
 
-    const pendingKeys = new Set();
+    const pendingMap = new Map();
     pendingRecords.forEach((record) => {
-      addBossRecordKeys(pendingKeys, record);
+      addBossRecordToMap(pendingMap, record);
     });
 
     const records = [...pendingRecords];
     const itemsToSync = list.filter((item) => {
-      const keys = bossItemKeys(item);
-      return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key));
+      return shouldSyncBossItem(item, savedMap, pendingMap);
     });
     const totalToSync = records.length + itemsToSync.length;
 
@@ -802,14 +854,11 @@
       if (!Array.isArray(list) || !list.length) throw new Error('没有捕获到 BOSS直聘最近 3 个月的聊天记录。请刷新 BOSS 消息页，等左侧聊天列表加载完成后再点击同步。');
       await writePreparedSourceList('boss', list);
       const existing = await readExistingBossPending();
-      const existingKeys = new Set();
+      const existingMap = new Map();
       existing.forEach((record) => {
-        addBossRecordKeys(existingKeys, record);
+        addBossRecordToMap(existingMap, record);
       });
-      const needSync = list.filter((item) => {
-        const keys = bossItemKeys(item);
-        return !keys.some((key) => existingKeys.has(key));
-      }).length;
+      const needSync = list.filter((item) => shouldSyncBossItem(item, existingMap, new Map())).length;
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: needSync, sourceListTotal: list.length, records: [] };
     }
     if (siteKey === 'liepin' && detected === 'liepin') {

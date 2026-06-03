@@ -88,6 +88,8 @@ function makeRecordKey(record) {
   const siteKey = normalizeText(record?.siteKey || '');
   const sourceName = normalizeText(record?.sourceName || '');
   const bossId = normalizeText(record?.boss?.encryptBossId || record?.boss?.bossId || '');
+  const bossJobId = normalizeText(record?.boss?.jobId || '');
+  if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId && bossJobId) return `boss|${bossId.toLowerCase()}|${bossJobId.toLowerCase()}`;
   if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId) return `boss|${bossId.toLowerCase()}`;
   const oppositeImId = normalizeText(record?.liepin?.oppositeImId || '');
   if ((siteKey === 'liepin' || sourceName === '猎聘') && oppositeImId) return `liepin|${oppositeImId.toLowerCase()}`;

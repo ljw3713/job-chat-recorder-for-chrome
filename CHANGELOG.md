@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.31.0 - 2026-06-04
+
+- BOSS直聘唯一索引改为 `boss|encryptBossId|jobId`，支持同一个招聘者关联多个岗位。
+- BOSS直聘同步前如果记录已存在但 `lastMessageInfo.msgId` 变化，会重新同步该记录。
+- BOSS直聘消息变化时使用 `lastMessageInfo.msgTime` 更新“更新时间”，并更新“原消息”。
+
 ## 1.30.0 - 2026-06-03
 
 - 修复猎聘待同步数量判断，去重比较同时兼容裸 `oppositeImId` 和 `liepin|oppositeImId`。
