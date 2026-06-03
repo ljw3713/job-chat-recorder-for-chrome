@@ -21,7 +21,6 @@ const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
 const cancelSyncBtn = document.getElementById('cancelSyncBtn');
 const resumeSyncBtn = document.getElementById('resumeSyncBtn');
 const pageHint = document.getElementById('pageHint');
-const refreshBossBtn = document.getElementById('refreshBossBtn');
 const syncRateLimit = document.getElementById('syncRateLimit');
 const startSyncBtn = document.getElementById('startSyncBtn');
 const importCsvBtn = document.getElementById('importCsvBtn');
@@ -153,20 +152,7 @@ function configureTodayOnly() {
   todayOnly.closest('.filter-box')?.classList.remove('disabled');
 }
 
-
-
-function isMissingBossFriendIdsError() {
-  const message = normalizeText(extractionStatus?.message || '');
-  return mode === 'sync' && extractionStatus?.siteKey === 'boss' && extractionStatus?.state === 'error' && message.includes('没有捕获到 BOSS直聘聊天列表接口参数');
-}
-
-function updateRefreshBossButton() {
-  if (!refreshBossBtn) return;
-  refreshBossBtn.style.display = isMissingBossFriendIdsError() ? '' : 'none';
-}
-
 function updateSyncButtons() {
-  updateRefreshBossButton();
   if (!cancelSyncBtn || !resumeSyncBtn) return;
   const isSync = mode === 'sync';
   const isSupported = isInterruptibleContext();
@@ -696,18 +682,6 @@ if (resumeSyncBtn) {
     if (!response?.ok) alert(response?.error || '继续同步失败');
     resumeSyncBtn.disabled = false;
     resumeSyncBtn.textContent = '继续同步';
-  });
-}
-
-
-if (refreshBossBtn) {
-  refreshBossBtn.addEventListener('click', async () => {
-    refreshBossBtn.disabled = true;
-    refreshBossBtn.textContent = '正在刷新并等待捕获...';
-    const response = await chrome.runtime.sendMessage({ type: 'REFRESH_BOSS_AND_RESUME' });
-    if (!response?.ok) alert(response?.error || '刷新并继续同步失败');
-    refreshBossBtn.disabled = false;
-    refreshBossBtn.textContent = '刷新 BOSS 消息页并继续';
   });
 }
 

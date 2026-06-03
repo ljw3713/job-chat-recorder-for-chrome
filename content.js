@@ -809,10 +809,6 @@
     };
   }
 
-  function isBossChatPage() {
-    return location.hostname === 'www.zhipin.com' && location.pathname === '/web/geek/chat';
-  }
-
   function detectSiteByLocation() {
     const hostname = location.hostname;
     if (/(^|\.)zhipin\.com$/i.test(hostname)) return 'boss';
@@ -849,7 +845,6 @@
   async function prepareByCurrentSite(siteKey) {
     const detected = detectSiteByLocation();
     if (siteKey === 'boss' && detected === 'boss') {
-      if (!isBossChatPage()) throw new Error('当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取。');
       const list = await fetchBossFriendList();
       if (!Array.isArray(list) || !list.length) throw new Error('没有捕获到 BOSS直聘最近 3 个月的聊天记录。请刷新 BOSS 消息页，等左侧聊天列表加载完成后再点击同步。');
       await writePreparedSourceList('boss', list);
@@ -883,12 +878,10 @@
   async function extractByCurrentSite(siteKey) {
     const detected = detectSiteByLocation();
     if (siteKey === 'boss' && detected === 'boss') {
-      if (!isBossChatPage()) throw new Error('当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取。');
       return extractBossChatRecords();
     }
     if (siteKey === 'liepin' && detected === 'liepin') return extractLiepinChatRecords();
     if (detected === 'boss') {
-      if (!isBossChatPage()) throw new Error('当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取。');
       return extractBossChatRecords();
     }
     if (detected === 'liepin') return extractLiepinChatRecords();

@@ -28,8 +28,6 @@ function supportedSiteNames() {
   return 'zhipin.com（BOSS直聘）、liepin.com（猎聘）';
 }
 
-const BOSS_CHAT_URL = 'https://www.zhipin.com/web/geek/chat';
-
 function normalizeText(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
@@ -243,85 +241,6 @@ async function savePendingToTotal() {
 }
 
 
-function isBossChatPage(tabUrl) {
-  try {
-    const url = new URL(tabUrl);
-    return url.hostname === 'www.zhipin.com' && url.pathname === '/web/geek/chat';
-  } catch (_) {
-    return false;
-  }
-}
-
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForTabComplete(tabId, timeoutMs = 20000) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (tab.status === 'complete') return tab;
-    } catch (error) {
-      throw new Error('原 BOSS 消息页已经关闭，请重新打开 BOSS 消息页后再同步。');
-    }
-    await delay(300);
-  }
-  try { return await chrome.tabs.get(tabId); } catch (_) { return null; }
-}
-
-async function waitForBossFriendListCapture(timeoutMs = 20000) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const store = await chrome.storage.local.get(['jobChatBossFriendListCapture']);
-    const capture = store.jobChatBossFriendListCapture;
-    const body = String(capture?.body || '');
-    const hasFriendIds = body.includes('friendIds=') || Array.isArray(capture?.data?.zpData?.result);
-    if (capture && hasFriendIds) return capture;
-    await delay(500);
-  }
-  throw new Error('刷新后仍未捕获到 BOSS 聊天列表接口参数。请确认 BOSS 消息页已登录且左侧聊天列表已加载，然后再试一次。');
-}
-
-async function refreshBossAndResume() {
-  const store = await chrome.storage.local.get(['jobChatLastSourceTab']);
-  const sourceTab = store.jobChatLastSourceTab;
-  if (!sourceTab?.id) throw new Error('没有找到上次同步的 BOSS 页面，请回到 BOSS 消息页重新点击插件同步。');
-
-  let currentTab;
-  try {
-    currentTab = await chrome.tabs.get(sourceTab.id);
-  } catch (_) {
-    throw new Error('原 BOSS 消息页已经关闭，请重新打开 BOSS 消息页后再同步。');
-  }
-
-  if (!isBossChatPage(currentTab.url || sourceTab.url || '')) {
-    throw new Error(`当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取：${BOSS_CHAT_URL}`);
-  }
-
-  await chrome.storage.local.remove(['jobChatBossFriendListCapture']);
-  await chrome.storage.local.set({
-    jobChatLiepinCancelRequested: false,
-    jobChatCancelRequested: false,
-    jobChatExtractionStatus: {
-      state: 'loading',
-      siteKey: 'boss',
-      siteTitle: 'BOSS直聘沟通记录',
-      sourceName: 'BOSS直聘',
-      startedAt: new Date().toISOString(),
-      message: '正在刷新 BOSS 消息页并等待聊天列表接口...'
-    }
-  });
-
-  await chrome.tabs.reload(sourceTab.id, { bypassCache: true });
-  const reloadedTab = await waitForTabComplete(sourceTab.id, 25000);
-  await waitForBossFriendListCapture(25000);
-  await chrome.storage.local.set({ jobChatLastSourceTab: { id: reloadedTab?.id || sourceTab.id, url: reloadedTab?.url || sourceTab.url, title: reloadedTab?.title || sourceTab.title } });
-  await extractFromTab(reloadedTab || sourceTab);
-  return { ok: true };
-}
-
 function unsupportedMessage(tabUrl) {
   const hostname = getHostname(tabUrl) || tabUrl || '当前页面';
   return `暂不支持当前网站：${hostname}\n目前支持 ${supportedSiteNames()}。`;
@@ -350,7 +269,6 @@ async function prepareSyncFromTab(tab) {
   if (!tab?.id) throw new Error('没有找到当前活动标签页。');
   const site = detectSupportedSite(tab.url || '');
   if (!site) throw new Error(unsupportedMessage(tab.url || ''));
-  if (site.key === 'boss' && !isBossChatPage(tab.url || '')) throw new Error(`当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取：${BOSS_CHAT_URL}`);
 
   await chrome.storage.local.set({ jobChatLiepinCancelRequested: true, jobChatCancelRequested: true });
   let response = await sendExtractMessage(tab.id, { ...site, messageType: 'JOB_CHAT_PREPARE_SYNC' });
@@ -393,9 +311,6 @@ async function extractFromTab(tab) {
 
   const site = detectSupportedSite(tab.url || '');
   if (!site) throw new Error(unsupportedMessage(tab.url || ''));
-  if (site.key === 'boss' && !isBossChatPage(tab.url || '')) {
-    throw new Error(`当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取：${BOSS_CHAT_URL}`);
-  }
 
   await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
 
@@ -455,25 +370,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })()
       .then((data) => sendResponse(data || { ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
-    return true;
-  }
-
-  if (message?.type === 'REFRESH_BOSS_AND_RESUME') {
-    refreshBossAndResume()
-      .then((data) => sendResponse(data || { ok: true }))
-      .catch(async (error) => {
-        await chrome.storage.local.set({
-          jobChatExtractionStatus: {
-            state: 'error',
-            siteKey: 'boss',
-            siteTitle: 'BOSS直聘沟通记录',
-            sourceName: 'BOSS直聘',
-            finishedAt: new Date().toISOString(),
-            message: error?.message || String(error)
-          }
-        });
-        sendResponse({ ok: false, error: error?.message || String(error) });
-      });
     return true;
   }
 
@@ -557,11 +453,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const sourceTab = message.tab;
     const site = detectSupportedSite(sourceTab?.url || '');
-
-    if (site?.key === 'boss' && !isBossChatPage(sourceTab?.url || '')) {
-      sendResponse({ ok: false, error: `当前不是 BOSS直聘消息页面。需要跳转到“消息”页面才能提取：${BOSS_CHAT_URL}` });
-      return;
-    }
 
     await chrome.storage.local.set({
       jobChatLastSourceTab: { id: sourceTab?.id, url: sourceTab?.url, title: sourceTab?.title },
