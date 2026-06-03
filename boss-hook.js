@@ -9,7 +9,17 @@
   }
 
   function isTarget(url) {
-    return typeof url === 'string' && url.includes('/wapi/zprelation/friend/geekFilterByLabel');
+    return typeof url === 'string' && (
+      url.includes('/wapi/zprelation/friend/geekFilterByLabel') ||
+      url.includes('/wapi/zprelation/friend/getGeekFriendList.json')
+    );
+  }
+
+  function isTargetMethod(method, url) {
+    if (typeof url !== 'string') return false;
+    if (url.includes('/wapi/zprelation/friend/geekFilterByLabel')) return method === 'GET';
+    if (url.includes('/wapi/zprelation/friend/getGeekFriendList.json')) return method === 'POST';
+    return false;
   }
 
   function safeText(value) {
@@ -27,7 +37,7 @@
       const method = (init.method || (input && input.method) || 'GET').toUpperCase();
       const body = init.body || '';
       const response = await originalFetch.apply(this, args);
-      if (method === 'GET' && isTarget(url)) {
+      if (isTargetMethod(method, url)) {
         try {
           const cloned = response.clone();
           const data = await cloned.json();
@@ -48,7 +58,7 @@
   };
   XMLHttpRequest.prototype.send = function (body) {
     const info = this.__jobChatRecorder || {};
-    if (info.method === 'GET' && isTarget(info.url)) {
+    if (isTargetMethod(info.method, info.url)) {
       this.addEventListener('load', function () {
         try {
           const data = JSON.parse(this.responseText || '{}');

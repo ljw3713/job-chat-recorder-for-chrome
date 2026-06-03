@@ -21,7 +21,7 @@
     });
   }
 
-  const normalizeText = (text) => (text || '').replace(/\s+/g, ' ').trim();
+  const normalizeText = (text) => String(text || '').replace(/\s+/g, ' ').trim();
 
   function extractJobName(message) {
     const text = normalizeText(message);
@@ -268,7 +268,7 @@
     return data?.zpData?.friendList || data?.zpData?.result || data?.result || [];
   }
 
-  async function fetchBossFriendList() {
+  async function fetchBossLabelFriendList() {
     const url = new URL('https://www.zhipin.com/wapi/zprelation/friend/geekFilterByLabel');
     url.searchParams.set('labelId', '0');
     const response = await fetch(url.toString(), {
@@ -280,6 +280,64 @@
     const data = await response.json();
     if (data?.code !== 0) throw new Error(`BOSS直聘列表接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
     return filterBossRecentList(parseBossFriendListResult(data));
+  }
+
+  function bossFriendIdsFromLabelList(list) {
+    if (!Array.isArray(list)) return [];
+    const ids = [];
+    const seen = new Set();
+    list.forEach((item) => {
+      const id = normalizeText(item?.friendId);
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      ids.push(id);
+    });
+    return ids;
+  }
+
+  function mergeBossFriendDetailList(labelList, detailList) {
+    if (!Array.isArray(detailList)) return [];
+    const labelByFriendId = new Map();
+    const labelByOrder = Array.isArray(labelList) ? labelList : [];
+    labelByOrder.forEach((item) => {
+      const id = normalizeText(item?.friendId);
+      if (id) labelByFriendId.set(id, item);
+    });
+
+    return detailList.map((item, index) => {
+      const id = normalizeText(item?.friendId);
+      const labelItem = (id && labelByFriendId.get(id)) || labelByOrder[index] || {};
+      return {
+        ...labelItem,
+        ...item,
+        friendId: item?.friendId || labelItem?.friendId || '',
+        friendSource: item?.friendSource ?? labelItem?.friendSource ?? '',
+        encryptFriendId: item?.encryptFriendId || labelItem?.encryptFriendId || '',
+        updateTime: item?.updateTime || labelItem?.updateTime || item?.lastMessageInfo?.msgTime || item?.lastTS || ''
+      };
+    });
+  }
+
+  async function fetchBossFriendDetailList(friendIds) {
+    const body = new URLSearchParams({ friendIds: friendIds.join(',') }).toString();
+    const response = await fetch('https://www.zhipin.com/wapi/zprelation/friend/getGeekFriendList.json', {
+      method: 'POST',
+      credentials: 'include',
+      headers: bossHeaders('application/x-www-form-urlencoded'),
+      body
+    });
+    if (!response.ok) throw new Error(`BOSS直聘岗位列表接口请求失败：HTTP ${response.status}`);
+    const data = await response.json();
+    if (data?.code !== 0) throw new Error(`BOSS直聘岗位列表接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
+    return parseBossFriendListResult(data);
+  }
+
+  async function fetchBossFriendList() {
+    const labelList = await fetchBossLabelFriendList();
+    const friendIds = bossFriendIdsFromLabelList(labelList);
+    if (!friendIds.length) return [];
+    const detailList = await fetchBossFriendDetailList(friendIds);
+    return filterBossRecentList(mergeBossFriendDetailList(labelList, detailList));
   }
 
   async function fetchBossData(item) {
