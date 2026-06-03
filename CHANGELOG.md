@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.29.0 - 2026-06-03
+
+- 修复 BOSS直聘待同步数量过多的问题，去重逻辑恢复旧版唯一索引优先级。
+- BOSS直聘唯一索引继续优先使用 `encryptBossId/encryptUid/uid/jobId/msgId`，`friendId` 仅作为兜底。
+- 去重比较同时兼容裸 id 和 `boss|id` 形式，并保留导入数据已有的唯一索引。
+
 ## 1.28.0 - 2026-06-03
 
 - BOSS直聘同步改为先通过 `geekFilterByLabel?labelId=0` 获取联系人 `friendId`。

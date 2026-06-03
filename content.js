@@ -248,8 +248,48 @@
     return headers;
   }
 
+  function bossLegacyFriendKey(item) {
+    return item?.encryptBossId || item?.encryptUid || item?.uid || item?.jobId || item?.lastMessageInfo?.msgId || '';
+  }
+
   function bossFriendKey(item) {
-    return item?.encryptFriendId || item?.friendId || item?.encryptBossId || item?.encryptUid || item?.uid || item?.jobId || item?.lastMessageInfo?.msgId || '';
+    return bossLegacyFriendKey(item) || item?.encryptFriendId || item?.friendId || '';
+  }
+
+  function addBossKeyVariants(keys, value) {
+    const key = normalizeText(value).toLowerCase();
+    if (!key) return;
+    keys.add(key);
+    if (key.startsWith('boss|')) {
+      const raw = key.slice(5);
+      if (raw) keys.add(raw);
+    } else {
+      keys.add(`boss|${key}`);
+    }
+  }
+
+  function addBossRecordKeys(keys, record) {
+    [
+      record?.boss?.contactKey,
+      record?.boss?.encryptBossId,
+      record?.boss?.bossId,
+      record?.recordKey
+    ].forEach((key) => addBossKeyVariants(keys, key));
+  }
+
+  function bossItemKeys(item) {
+    const keys = new Set();
+    [
+      bossLegacyFriendKey(item),
+      item?.encryptBossId,
+      item?.encryptUid,
+      item?.uid,
+      item?.jobId,
+      item?.lastMessageInfo?.msgId,
+      item?.encryptFriendId,
+      item?.friendId
+    ].forEach((key) => addBossKeyVariants(keys, key));
+    return [...keys];
   }
 
   async function readExistingBossPending() {
@@ -386,7 +426,7 @@
         friendId: item.friendId || '',
         friendSource: item.friendSource ?? '',
         encryptFriendId: item.encryptFriendId || '',
-        bossId: data.bossId || item.uid || item.friendId || '',
+        bossId: data.bossId || item.uid || '',
         encryptBossId: data.encryptBossId || item.encryptBossId || item.encryptUid || '',
         securityId: data.securityId || item.securityId || '',
         jobId: item.jobId || '',
@@ -418,17 +458,17 @@
 
     const savedKeys = new Set();
     savedRecords.forEach((record) => {
-      [record?.boss?.contactKey, record?.boss?.encryptFriendId, record?.boss?.friendId, record?.boss?.encryptBossId, record?.boss?.bossId, record?.recordKey].filter(Boolean).forEach((key) => savedKeys.add(String(key)));
+      addBossRecordKeys(savedKeys, record);
     });
 
     const pendingKeys = new Set();
     pendingRecords.forEach((record) => {
-      [record?.boss?.contactKey, record?.boss?.encryptFriendId, record?.boss?.friendId, record?.boss?.encryptBossId, record?.boss?.bossId, record?.recordKey].filter(Boolean).forEach((key) => pendingKeys.add(String(key)));
+      addBossRecordKeys(pendingKeys, record);
     });
 
     const records = [...pendingRecords];
     const itemsToSync = list.filter((item) => {
-      const keys = [bossFriendKey(item), item.encryptFriendId || '', item.friendId || '', item.encryptBossId || item.encryptUid || '', item.uid || ''].filter(Boolean).map(String);
+      const keys = bossItemKeys(item);
       return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key));
     });
     const totalToSync = records.length + itemsToSync.length;
@@ -732,10 +772,10 @@
       const existing = await readExistingBossPending();
       const existingKeys = new Set();
       existing.forEach((record) => {
-        [record?.boss?.contactKey, record?.boss?.encryptFriendId, record?.boss?.friendId, record?.boss?.encryptBossId, record?.boss?.bossId, record?.recordKey].filter(Boolean).forEach((key) => existingKeys.add(String(key)));
+        addBossRecordKeys(existingKeys, record);
       });
       const needSync = list.filter((item) => {
-        const keys = [bossFriendKey(item), item.encryptFriendId || '', item.friendId || '', item.encryptBossId || item.encryptUid || '', item.uid || ''].filter(Boolean).map(String);
+        const keys = bossItemKeys(item);
         return !keys.some((key) => existingKeys.has(key));
       }).length;
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: needSync, sourceListTotal: list.length, records: [] };
