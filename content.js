@@ -173,6 +173,38 @@
     return item?.oppositeImId || item?.id || item?.oppositeUserId || item?.latestMsgId || '';
   }
 
+  function addLiepinKeyVariants(keys, value) {
+    const key = normalizeText(value).toLowerCase();
+    if (!key) return;
+    keys.add(key);
+    if (key.startsWith('liepin|')) {
+      const raw = key.slice(7);
+      if (raw) keys.add(raw);
+    } else {
+      keys.add(`liepin|${key}`);
+    }
+  }
+
+  function addLiepinRecordKeys(keys, record) {
+    [
+      record?.liepin?.oppositeImId,
+      record?.liepin?.contactKey,
+      record?.recordKey
+    ].forEach((key) => addLiepinKeyVariants(keys, key));
+  }
+
+  function liepinItemKeys(item) {
+    const keys = new Set();
+    [
+      item?.oppositeImId,
+      liepinContactKey(item),
+      item?.id,
+      item?.oppositeUserId,
+      item?.latestMsgId
+    ].forEach((key) => addLiepinKeyVariants(keys, key));
+    return [...keys];
+  }
+
   async function saveLiepinPartial(records, synced, total, interrupted, completed) {
     try {
       await chrome.runtime.sendMessage({
@@ -643,17 +675,17 @@
 
     const savedKeys = new Set();
     savedRecords.forEach((record) => {
-      [record?.liepin?.oppositeImId, record?.liepin?.contactKey, record?.recordKey].filter(Boolean).forEach((key) => savedKeys.add(String(key)));
+      addLiepinRecordKeys(savedKeys, record);
     });
 
     const pendingKeys = new Set();
     pendingRecords.forEach((record) => {
-      [record?.liepin?.oppositeImId, record?.liepin?.contactKey, record?.recordKey].filter(Boolean).forEach((key) => pendingKeys.add(String(key)));
+      addLiepinRecordKeys(pendingKeys, record);
     });
 
     const records = [...pendingRecords];
     const contactsToSync = contacts.filter((item) => {
-      const keys = [item.oppositeImId || '', liepinContactKey(item)].filter(Boolean).map(String);
+      const keys = liepinItemKeys(item);
       return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key));
     });
     const totalToSync = records.length + contactsToSync.length;
@@ -786,8 +818,14 @@
       const contacts = filterLiepinRecentContacts(await fetchLiepinContacts(imId));
       await writePreparedSourceList('liepin', contacts);
       const existing = await readExistingLiepinPending();
-      const existingKeys = new Set(existing.map((record) => String(record?.liepin?.oppositeImId || record?.liepin?.contactKey || record?.recordKey || '')).filter(Boolean));
-      const needSync = contacts.filter((item) => !existingKeys.has(String(item.oppositeImId || '')) && !existingKeys.has(String(liepinContactKey(item)))).length;
+      const existingKeys = new Set();
+      existing.forEach((record) => {
+        addLiepinRecordKeys(existingKeys, record);
+      });
+      const needSync = contacts.filter((item) => {
+        const keys = liepinItemKeys(item);
+        return !keys.some((key) => existingKeys.has(key));
+      }).length;
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: needSync, sourceListTotal: contacts.length, records: [] };
     }
     return extractByCurrentSite(siteKey);
