@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "package": "node scripts/package-extension.js"
+  },
+  "devDependencies": {}
+}

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "招聘沟通记录统计器",
-  "version": "1.35.0",
-  "description": "轻松更新沟通记录。当前支持 BOSS直聘 zhipin.com、猎聘 liepin.com，支持表格、CSV 和 JSON 导出。",
+  "version": "1.36.0",
+  "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
   "permissions": [
     "activeTab",
     "scripting",

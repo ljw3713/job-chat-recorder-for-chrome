@@ -40,6 +40,16 @@
 4. 点击“加载已解压的扩展程序”
 5. 选择本项目根目录
 
+## Chrome 商店打包
+
+运行以下命令生成可上传到 Chrome Web Store 的 zip 包：
+
+```bash
+npm run package
+```
+
+打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
+
 ## 使用方式
 
 1. 打开 BOSS 直聘或猎聘页面，并确认已登录
@@ -52,6 +62,7 @@
 
 ```text
 .
+├── package.json
 ├── manifest.json
 ├── shared-utils.js
 ├── shared-records.js
@@ -65,6 +76,8 @@
 ├── results-database.js
 ├── results.html
 ├── results.js
+├── scripts/
+│   └── package-extension.js
 ├── assets/
 │   └── icons/
 │       ├── icon-16.png
