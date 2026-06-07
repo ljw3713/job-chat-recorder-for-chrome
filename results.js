@@ -32,7 +32,7 @@ const ignoredRecordsBox = document.getElementById('ignoredRecordsBox');
 const closeIgnoredModalBtn = document.getElementById('closeIgnoredModalBtn');
 
 const mode = new URLSearchParams(location.search).get('mode') === 'sync' ? 'sync' : 'overview';
-const { normalizeText, formatDate } = globalThis.JobChatUtils;
+const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const { recruiterInfo, communicationDate, makeRecordKey } = globalThis.JobChatRecords;
 const ResultsDb = globalThis.JobChatResultsDb;
 
@@ -185,12 +185,7 @@ function renderError(status) {
   extractionStatus = status || extractionStatus;
   configureTodayOnly();
   setStatus('error', status?.message || '提取失败。');
-  updateRefreshBossButton();
-  if (isMissingBossFriendIdsError()) {
-    tableBox.innerHTML = '<div class="empty">没有捕获到 BOSS 聊天列表参数。可以点击上方“刷新 BOSS 消息页并继续”，插件会刷新原消息页，捕获到参数后自动继续同步。</div>';
-  } else {
-    tableBox.innerHTML = '<div class="empty">提取失败，请返回招聘网站页面后重新点击插件。</div>';
-  }
+  tableBox.innerHTML = '<div class="empty">提取失败，请返回招聘网站页面后重新点击插件。</div>';
   jsonBox.textContent = JSON.stringify({ error: status?.message || '提取失败。' }, null, 2);
 }
 

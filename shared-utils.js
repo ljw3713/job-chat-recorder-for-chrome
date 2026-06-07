@@ -44,6 +44,16 @@
     return normalizeText(textarea.value || text || '');
   }
 
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[ch]));
+  }
+
   function getCookieValue(name) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
@@ -58,6 +68,7 @@
     getHostname,
     extractJobName,
     htmlDecode,
+    escapeHtml,
     getCookieValue
   };
 })();
