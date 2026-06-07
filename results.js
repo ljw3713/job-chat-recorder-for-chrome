@@ -373,14 +373,14 @@ async function persistIgnoredRecords() {
   await chrome.storage.local.set({ jobChatIgnoredRecords: ignoredRecords });
 }
 
-async function removeKeysFromTotalRecords(keys) {
-  if (!keys.size) return;
-  const store = await chrome.storage.local.get(['jobChatRecords']);
-  const records = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
-  const kept = records.filter((record) => !keys.has(recordKeyOf(record)));
-  if (kept.length !== records.length) {
-    await chrome.storage.local.set({ jobChatRecords: kept.map((record, index) => ({ ...record, index: index + 1 })) });
-  }
+function normalizedIgnoredRecords() {
+  const byKey = new Map();
+  ignoredRecords.forEach((record) => {
+    const recordKey = recordKeyOf(record);
+    if (!recordKey) return;
+    byKey.set(recordKey, { ...record, recordKey });
+  });
+  return Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
 }
 
 async function ignoreSelectedRecords() {
@@ -401,9 +401,27 @@ async function ignoreSelectedRecords() {
   const ignoredKeys = new Set(selected.map((record) => record.recordKey));
   selectedKeys.clear();
 
-  await persistIgnoredRecords();
-  await removeKeysFromTotalRecords(ignoredKeys);
-  await persistCurrentRecords();
+  ignoredRecords = normalizedIgnoredRecords();
+  const records = allRecords.map((record, index) => ({ ...record, index: index + 1 }));
+  allRecords = records;
+  latestData = { ...(latestData || {}), total: records.length, records };
+
+  const store = await chrome.storage.local.get(['jobChatRecords']);
+  const totalRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
+  const keptTotalRecords = totalRecords.filter((record) => !ignoredKeys.has(recordKeyOf(record))).map((record, index) => ({ ...record, index: index + 1 }));
+  const storageUpdate = {
+    jobChatIgnoredRecords: ignoredRecords,
+    jobChatRecords: keptTotalRecords
+  };
+  if (mode === 'sync') {
+    storageUpdate.jobChatPendingRecords = latestData;
+    storageUpdate.bossChatStatsLatest = latestData;
+  } else {
+    storageUpdate.jobChatRecords = records;
+    storageUpdate.bossChatStatsLatest = latestData;
+  }
+  await chrome.storage.local.set(storageUpdate);
+
   populateFilters();
   renderTable();
 }
@@ -594,7 +612,12 @@ async function loadAndRenderLatest() {
 
   if (mode === 'sync') {
     latestData = result.jobChatPendingRecords || result.bossChatStatsLatest || { total: 0, records: [] };
-    allRecords = (latestData.records || []).map(normalizeRecord);
+    const ignoredKeys = new Set(ignoredRecords.map((record) => record.recordKey));
+    allRecords = (latestData.records || []).map(normalizeRecord).filter((record) => !ignoredKeys.has(record.recordKey));
+    if (allRecords.length !== (latestData.records || []).length) {
+      latestData = { ...latestData, total: allRecords.length, records: allRecords };
+      await chrome.storage.local.set({ jobChatPendingRecords: latestData, bossChatStatsLatest: latestData });
+    }
 
     if (extractionStatus?.state === 'ready') {
       configurePageMode();
