@@ -76,6 +76,10 @@ function isTodayRecord(record) {
   return record.updatedDate === formatDate(new Date());
 }
 
+function boldNumber(value) {
+  return `<strong>${escapeHtml(value)}</strong>`;
+}
+
 function isLiepinContext() {
   return extractionStatus?.siteKey === 'liepin' || latestData?.siteKey === 'liepin';
 }
