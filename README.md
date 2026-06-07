@@ -53,9 +53,16 @@
 ```text
 .
 ├── manifest.json
+├── shared-utils.js
+├── shared-records.js
+├── content-common.js
+├── boss-extractor.js
+├── liepin-extractor.js
 ├── popup.html
 ├── popup.js
 ├── content.js
+├── background-database.js
+├── results-database.js
 ├── results.html
 ├── results.js
 ├── assets/

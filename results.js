@@ -32,6 +32,9 @@ const ignoredRecordsBox = document.getElementById('ignoredRecordsBox');
 const closeIgnoredModalBtn = document.getElementById('closeIgnoredModalBtn');
 
 const mode = new URLSearchParams(location.search).get('mode') === 'sync' ? 'sync' : 'overview';
+const { normalizeText, formatDate } = globalThis.JobChatUtils;
+const { recruiterInfo, communicationDate, makeRecordKey } = globalThis.JobChatRecords;
+const ResultsDb = globalThis.JobChatResultsDb;
 
 let latestData = null;
 let extractionStatus = null;
@@ -42,66 +45,6 @@ let selectedKeys = new Set();
 
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者信息', '原消息'];
 const exportHeaders = ['唯一索引id', ...tableHeaders];
-
-function normalizeText(text) {
-  return String(text ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function escapeHtml(text) {
-  return String(text ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-}
-
-function boldNumber(value) {
-  return `<strong>${escapeHtml(value)}</strong>`;
-}
-
-function formatDate(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function addDays(date, days) {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + days);
-  return copy;
-}
-
-function communicationDate(record) {
-  const raw = normalizeText(record?.time || record?.updatedDate || record?.applicationDate);
-  const now = new Date();
-  if (!raw) return '';
-  if (/^\d{1,2}:\d{2}$/.test(raw)) return formatDate(now);
-  if (raw.includes('昨天')) return formatDate(addDays(now, -1));
-  if (raw.includes('前天')) return formatDate(addDays(now, -2));
-  let match = raw.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
-  if (match) return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`;
-  match = raw.match(/(?:^|\D)(\d{1,2})[-/.月](\d{1,2})(?:日)?(?:\D|$)/);
-  if (match) return `${now.getFullYear()}-${String(match[1]).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}`;
-  return raw;
-}
-
-function recruiterInfo(record) {
-  const name = normalizeText(record?.recruiterName);
-  const title = normalizeText(record?.recruiterTitle);
-  if (name && title) return `${name} / ${title}`;
-  return name || title || '';
-}
-
-function makeRecordKey(record) {
-  const siteKey = normalizeText(record?.siteKey || '');
-  const sourceName = normalizeText(record?.sourceName || '');
-  const bossId = normalizeText(record?.boss?.encryptBossId || record?.boss?.bossId || '');
-  const bossJobId = normalizeText(record?.boss?.jobId || '');
-  if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId && bossJobId) return `boss|${bossId.toLowerCase()}|${bossJobId.toLowerCase()}`;
-  if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId) return `boss|${bossId.toLowerCase()}`;
-  const oppositeImId = normalizeText(record?.liepin?.oppositeImId || '');
-  if ((siteKey === 'liepin' || sourceName === '猎聘') && oppositeImId) return `liepin|${oppositeImId.toLowerCase()}`;
-  return normalizeText(record.recordKey) || [sourceName || siteKey || '', record.companyName, record.jobName, recruiterInfo(record)]
-    .map((v) => normalizeText(v).toLowerCase())
-    .join('|');
-}
 
 function recordKeyOf(record) {
   return normalizeText(record?.recordKey || makeRecordKey(record));
@@ -336,29 +279,21 @@ function updateJsonBox() {
 
 function toTsv(includeHeader = true) {
   const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.lastMessage]);
-  const lines = includeHeader ? [exportHeaders, ...rows] : rows;
-  return lines.map((row) => row.map((cell) => String(cell ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
-}
-
-function csvEscape(value) {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  return ResultsDb.tsv(exportHeaders, rows, includeHeader);
 }
 
 function toCsv() {
   const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.lastMessage]);
-  return [exportHeaders, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
+  return ResultsDb.csv(exportHeaders, rows);
 }
 
 async function persistCurrentRecords() {
   const records = allRecords.map((record, index) => ({ ...record, index: index + 1 }));
   allRecords = records;
   if (mode === 'sync') {
-    latestData = { ...(latestData || {}), total: records.length, records };
-    await chrome.storage.local.set({ jobChatPendingRecords: latestData, bossChatStatsLatest: latestData });
+    latestData = await ResultsDb.saveSyncRecords(latestData, records);
   } else {
-    latestData = { ...(latestData || {}), total: records.length, records };
-    await chrome.storage.local.set({ jobChatRecords: records, bossChatStatsLatest: latestData });
+    latestData = await ResultsDb.saveOverviewRecords(latestData, records);
   }
 }
 
@@ -370,7 +305,7 @@ async function persistIgnoredRecords() {
     byKey.set(recordKey, { ...record, recordKey });
   });
   ignoredRecords = Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
-  await chrome.storage.local.set({ jobChatIgnoredRecords: ignoredRecords });
+  await ResultsDb.saveIgnoredRecords(ignoredRecords);
 }
 
 function normalizedIgnoredRecords() {
@@ -406,8 +341,7 @@ async function ignoreSelectedRecords() {
   allRecords = records;
   latestData = { ...(latestData || {}), total: records.length, records };
 
-  const store = await chrome.storage.local.get(['jobChatRecords']);
-  const totalRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
+  const totalRecords = await ResultsDb.loadTotalRecords();
   const keptTotalRecords = totalRecords.filter((record) => !ignoredKeys.has(recordKeyOf(record))).map((record, index) => ({ ...record, index: index + 1 }));
   const storageUpdate = {
     jobChatIgnoredRecords: ignoredRecords,
@@ -420,7 +354,7 @@ async function ignoreSelectedRecords() {
     storageUpdate.jobChatRecords = records;
     storageUpdate.bossChatStatsLatest = latestData;
   }
-  await chrome.storage.local.set(storageUpdate);
+  await ResultsDb.saveMultiple(storageUpdate);
 
   populateFilters();
   renderTable();
@@ -606,7 +540,7 @@ function renderTable() {
 }
 
 async function loadAndRenderLatest() {
-  const result = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatExtractionStatus', 'jobChatRecords', 'bossChatStatsLatest', 'jobChatIgnoredRecords']);
+  const result = await ResultsDb.loadResultsState();
   extractionStatus = result.jobChatExtractionStatus || null;
   ignoredRecords = Array.isArray(result.jobChatIgnoredRecords) ? result.jobChatIgnoredRecords.map(normalizeRecord) : [];
 
@@ -616,7 +550,7 @@ async function loadAndRenderLatest() {
     allRecords = (latestData.records || []).map(normalizeRecord).filter((record) => !ignoredKeys.has(record.recordKey));
     if (allRecords.length !== (latestData.records || []).length) {
       latestData = { ...latestData, total: allRecords.length, records: allRecords };
-      await chrome.storage.local.set({ jobChatPendingRecords: latestData, bossChatStatsLatest: latestData });
+      await ResultsDb.saveSyncRecords(latestData, allRecords);
     }
 
     if (extractionStatus?.state === 'ready') {
@@ -658,63 +592,9 @@ async function loadAndRenderLatest() {
 }
 
 
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cell = '';
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (inQuotes) {
-      if (ch === '"' && next === '"') { cell += '"'; i += 1; }
-      else if (ch === '"') inQuotes = false;
-      else cell += ch;
-    } else {
-      if (ch === '"') inQuotes = true;
-      else if (ch === ',') { row.push(cell); cell = ''; }
-      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
-      else if (ch !== '\r') cell += ch;
-    }
-  }
-  row.push(cell);
-  if (row.length > 1 || row[0]) rows.push(row);
-  return rows;
-}
-
-function rowsFromImportedCsv(text) {
-  const rows = parseCsv(text.replace(/^\ufeff/, ''));
-  if (!rows.length) return [];
-  const headers = rows[0].map((h) => normalizeText(h));
-  const get = (row, name) => row[headers.indexOf(name)] || '';
-  return rows.slice(1).filter((row) => row.some((cell) => normalizeText(cell))).map((row, index) => {
-    const sourceName = get(row, '来源');
-    const recruiter = get(row, '招聘者信息');
-    const [recruiterName, recruiterTitle] = recruiter.split('/').map((v) => normalizeText(v));
-    const record = {
-      index: index + 1,
-      recordKey: get(row, '唯一索引id'),
-      sourceName,
-      siteKey: sourceName === '猎聘' ? 'liepin' : sourceName === 'BOSS直聘' ? 'boss' : '',
-      companyName: get(row, '公司名'),
-      jobName: get(row, '岗位名'),
-      applicationDate: get(row, '申请时间'),
-      updatedDate: get(row, '更新时间'),
-      note: get(row, '备注'),
-      recruiterName,
-      recruiterTitle: recruiterTitle || '',
-      lastMessage: get(row, '原消息'),
-      importedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    record.recordKey = normalizeText(record.recordKey) || makeRecordKey(record);
-    return record;
-  });
-}
-
 async function importCsvFile(file) {
   const text = await file.text();
-  const imported = rowsFromImportedCsv(text).map(normalizeRecord);
+  const imported = ResultsDb.rowsFromImportedCsv(text).map(normalizeRecord);
   if (!imported.length) throw new Error('CSV 中没有可导入的记录。');
   const byKey = new Map(allRecords.map((record) => [record.recordKey, record]));
   let inserted = 0;
@@ -797,13 +677,13 @@ if (ignoredModal) {
 
 
 if (syncRateLimit) {
-  chrome.storage.local.get(['jobChatSyncRateLimit']).then((store) => {
-    syncRateLimit.value = String(store.jobChatSyncRateLimit || 2);
+  ResultsDb.loadSyncRateLimit().then((rate) => {
+    syncRateLimit.value = String(rate || 2);
   });
   syncRateLimit.addEventListener('change', async () => {
     const rate = Math.max(1, Math.min(10, Number(syncRateLimit.value || 2)));
     syncRateLimit.value = String(rate);
-    await chrome.storage.local.set({ jobChatSyncRateLimit: rate });
+    await ResultsDb.saveSyncRateLimit(rate);
   });
 }
 
@@ -811,7 +691,7 @@ if (startSyncBtn) {
   startSyncBtn.addEventListener('click', async () => {
     startSyncBtn.disabled = true;
     const rate = Math.max(1, Math.min(10, Number(syncRateLimit?.value || 2)));
-    await chrome.storage.local.set({ jobChatSyncRateLimit: rate });
+    await ResultsDb.saveSyncRateLimit(rate);
     const response = await chrome.runtime.sendMessage({ type: 'START_PREPARED_SYNC' });
     if (!response?.ok) alert(response?.error || '同步失败');
     startSyncBtn.disabled = false;
