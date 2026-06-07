@@ -123,6 +123,14 @@ function normalizeStoredRecords(records) {
   });
 }
 
+function recordKeySet(records) {
+  const keys = new Set();
+  normalizeStoredRecords(records || []).forEach((record) => {
+    if (record.recordKey) keys.add(record.recordKey);
+  });
+  return keys;
+}
+
 function mergeRecordLists(existing, incoming) {
   const byKey = new Map();
   normalizeStoredRecords(existing).forEach((record) => byKey.set(record.recordKey, record));
@@ -221,10 +229,12 @@ async function saveLiepinPartialExtraction(partial) {
 }
 
 async function savePendingToTotal() {
-  const store = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatRecords']);
+  const store = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatRecords', 'jobChatIgnoredRecords']);
   const pending = store.jobChatPendingRecords || { records: [] };
-  const incoming = normalizeStoredRecords(pending.records || []);
-  const merged = mergeRecordLists(store.jobChatRecords || [], incoming);
+  const ignoredKeys = recordKeySet(store.jobChatIgnoredRecords || []);
+  const incoming = normalizeStoredRecords(pending.records || []).filter((record) => !ignoredKeys.has(record.recordKey));
+  const existing = normalizeStoredRecords(store.jobChatRecords || []).filter((record) => !ignoredKeys.has(record.recordKey));
+  const merged = mergeRecordLists(existing, incoming);
   const totalData = {
     ...(pending || {}),
     extractedAt: new Date().toISOString(),

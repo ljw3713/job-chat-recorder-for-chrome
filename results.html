@@ -51,6 +51,14 @@
     .status-card.ready { color: #065f46; border-color: #a7f3d0; background: #ecfdf5; }
     .status-spinner { width: 18px; height: 18px; border: 3px solid #d1fae5; border-top-color: #16a085; border-radius: 50%; animation: spin .8s linear infinite; flex: 0 0 auto; }
     .status-card.error .status-spinner { display: none; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 50; padding: 24px; box-sizing: border-box; }
+    .modal-backdrop.show { display: flex; }
+    .modal { width: min(920px, 100%); max-height: 82vh; overflow: auto; background: white; border-radius: 8px; box-shadow: 0 24px 60px rgba(17,24,39,.24); }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #e5e7eb; }
+    .modal-header h2 { margin: 0; font-size: 16px; }
+    .modal-body { padding: 16px 18px; }
+    .modal table { margin-bottom: 0; }
+    th.action, td.action-cell { width: 90px; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -68,6 +76,8 @@
         <button id="copyTableBtn">复制表格</button>
         <button id="downloadCsvBtn" class="secondary">下载 CSV</button>
         <button id="deleteSelectedBtn" class="danger">删除选中</button>
+        <button id="ignoreSelectedBtn" class="danger">忽略选中</button>
+        <button id="ignoredRecordsBtn" class="secondary" style="display:none;">忽略记录</button>
         <label class="filter-box">
           <input id="todayOnly" type="checkbox" />
           只显示今天沟通
@@ -118,6 +128,15 @@
     <div class="section-title">JSON 预览</div>
     <pre id="jsonBox">loading...</pre>
   </main>
+  <div id="ignoredModal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>忽略记录</h2>
+        <button id="closeIgnoredModalBtn" class="light">关闭</button>
+      </div>
+      <div id="ignoredRecordsBox" class="modal-body"></div>
+    </div>
+  </div>
   <script src="results.js"></script>
 </body>
 </html>

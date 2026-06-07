@@ -389,6 +389,15 @@
     }
   }
 
+  async function readIgnoredRecords() {
+    try {
+      const store = await chrome.storage.local.get(['jobChatIgnoredRecords']);
+      return Array.isArray(store.jobChatIgnoredRecords) ? store.jobChatIgnoredRecords : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   function parseBossFriendListResult(data) {
     return data?.zpData?.friendList || data?.zpData?.result || data?.result || [];
   }
@@ -540,6 +549,7 @@
     const pending = store.jobChatPendingRecords;
     const pendingRecords = pending?.siteKey === 'boss' && Array.isArray(pending.records) ? pending.records : [];
     const savedRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords.filter((record) => record?.siteKey === 'boss' || record?.sourceName === 'BOSS直聘') : [];
+    const ignoredRecords = (await readIgnoredRecords()).filter((record) => record?.siteKey === 'boss' || record?.sourceName === 'BOSS直聘');
 
     const savedMap = new Map();
     savedRecords.forEach((record) => {
@@ -550,9 +560,14 @@
     pendingRecords.forEach((record) => {
       addBossRecordToMap(pendingMap, record);
     });
+    const ignoredMap = new Map();
+    ignoredRecords.forEach((record) => {
+      addBossRecordToMap(ignoredMap, record);
+    });
 
     const records = [...pendingRecords];
     const itemsToSync = list.filter((item) => {
+      if (findBossRecordByItem(ignoredMap, item)) return false;
       return shouldSyncBossItem(item, savedMap, pendingMap);
     });
     const totalToSync = records.length + itemsToSync.length;
@@ -724,6 +739,7 @@
     const pending = store.jobChatPendingRecords;
     const pendingRecords = pending?.siteKey === 'liepin' && Array.isArray(pending.records) ? pending.records : [];
     const savedRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords.filter((record) => record?.siteKey === 'liepin' || record?.sourceName === '猎聘') : [];
+    const ignoredRecords = (await readIgnoredRecords()).filter((record) => record?.siteKey === 'liepin' || record?.sourceName === '猎聘');
 
     const savedKeys = new Set();
     savedRecords.forEach((record) => {
@@ -734,11 +750,15 @@
     pendingRecords.forEach((record) => {
       addLiepinRecordKeys(pendingKeys, record);
     });
+    const ignoredKeys = new Set();
+    ignoredRecords.forEach((record) => {
+      addLiepinRecordKeys(ignoredKeys, record);
+    });
 
     const records = [...pendingRecords];
     const contactsToSync = contacts.filter((item) => {
       const keys = liepinItemKeys(item);
-      return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key));
+      return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key) || ignoredKeys.has(key));
     });
     const totalToSync = records.length + contactsToSync.length;
 
@@ -849,11 +869,16 @@
       if (!Array.isArray(list) || !list.length) throw new Error('没有捕获到 BOSS直聘最近 3 个月的聊天记录。请刷新 BOSS 消息页，等左侧聊天列表加载完成后再点击同步。');
       await writePreparedSourceList('boss', list);
       const existing = await readExistingBossPending();
+      const ignored = (await readIgnoredRecords()).filter((record) => record?.siteKey === 'boss' || record?.sourceName === 'BOSS直聘');
       const existingMap = new Map();
       existing.forEach((record) => {
         addBossRecordToMap(existingMap, record);
       });
-      const needSync = list.filter((item) => shouldSyncBossItem(item, existingMap, new Map())).length;
+      const ignoredMap = new Map();
+      ignored.forEach((record) => {
+        addBossRecordToMap(ignoredMap, record);
+      });
+      const needSync = list.filter((item) => !findBossRecordByItem(ignoredMap, item) && shouldSyncBossItem(item, existingMap, new Map())).length;
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: needSync, sourceListTotal: list.length, records: [] };
     }
     if (siteKey === 'liepin' && detected === 'liepin') {
@@ -862,13 +887,18 @@
       const contacts = filterLiepinRecentContacts(await fetchLiepinContacts(imId));
       await writePreparedSourceList('liepin', contacts);
       const existing = await readExistingLiepinPending();
+      const ignored = (await readIgnoredRecords()).filter((record) => record?.siteKey === 'liepin' || record?.sourceName === '猎聘');
       const existingKeys = new Set();
       existing.forEach((record) => {
         addLiepinRecordKeys(existingKeys, record);
       });
+      const ignoredKeys = new Set();
+      ignored.forEach((record) => {
+        addLiepinRecordKeys(ignoredKeys, record);
+      });
       const needSync = contacts.filter((item) => {
         const keys = liepinItemKeys(item);
-        return !keys.some((key) => existingKeys.has(key));
+        return !keys.some((key) => existingKeys.has(key) || ignoredKeys.has(key));
       }).length;
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: needSync, sourceListTotal: contacts.length, records: [] };
     }

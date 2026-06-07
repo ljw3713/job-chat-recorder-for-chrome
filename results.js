@@ -18,6 +18,8 @@ const statusText = document.getElementById('statusText');
 const saveBtn = document.getElementById('saveBtn');
 const overviewBtn = document.getElementById('overviewBtn');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+const ignoreSelectedBtn = document.getElementById('ignoreSelectedBtn');
+const ignoredRecordsBtn = document.getElementById('ignoredRecordsBtn');
 const cancelSyncBtn = document.getElementById('cancelSyncBtn');
 const resumeSyncBtn = document.getElementById('resumeSyncBtn');
 const pageHint = document.getElementById('pageHint');
@@ -25,6 +27,9 @@ const syncRateLimit = document.getElementById('syncRateLimit');
 const startSyncBtn = document.getElementById('startSyncBtn');
 const importCsvBtn = document.getElementById('importCsvBtn');
 const importCsvInput = document.getElementById('importCsvInput');
+const ignoredModal = document.getElementById('ignoredModal');
+const ignoredRecordsBox = document.getElementById('ignoredRecordsBox');
+const closeIgnoredModalBtn = document.getElementById('closeIgnoredModalBtn');
 
 const mode = new URLSearchParams(location.search).get('mode') === 'sync' ? 'sync' : 'overview';
 
@@ -32,6 +37,7 @@ let latestData = null;
 let extractionStatus = null;
 let allRecords = [];
 let currentRecords = [];
+let ignoredRecords = [];
 let selectedKeys = new Set();
 
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者信息', '原消息'];
@@ -95,6 +101,10 @@ function makeRecordKey(record) {
   return normalizeText(record.recordKey) || [sourceName || siteKey || '', record.companyName, record.jobName, recruiterInfo(record)]
     .map((v) => normalizeText(v).toLowerCase())
     .join('|');
+}
+
+function recordKeyOf(record) {
+  return normalizeText(record?.recordKey || makeRecordKey(record));
 }
 
 function normalizeRecord(record, index) {
@@ -352,6 +362,107 @@ async function persistCurrentRecords() {
   }
 }
 
+async function persistIgnoredRecords() {
+  const byKey = new Map();
+  ignoredRecords.forEach((record) => {
+    const recordKey = recordKeyOf(record);
+    if (!recordKey) return;
+    byKey.set(recordKey, { ...record, recordKey });
+  });
+  ignoredRecords = Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
+  await chrome.storage.local.set({ jobChatIgnoredRecords: ignoredRecords });
+}
+
+async function removeKeysFromTotalRecords(keys) {
+  if (!keys.size) return;
+  const store = await chrome.storage.local.get(['jobChatRecords']);
+  const records = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
+  const kept = records.filter((record) => !keys.has(recordKeyOf(record)));
+  if (kept.length !== records.length) {
+    await chrome.storage.local.set({ jobChatRecords: kept.map((record, index) => ({ ...record, index: index + 1 })) });
+  }
+}
+
+async function ignoreSelectedRecords() {
+  if (!selectedKeys.size) return;
+  const selected = allRecords.filter((record) => selectedKeys.has(record.recordKey));
+  if (!selected.length) return;
+  if (!confirm(`确认忽略选中的 ${selected.length} 条记录？`)) return;
+
+  const ignoredByKey = new Map(ignoredRecords.map((record) => [record.recordKey, record]));
+  selected.forEach((record) => {
+    ignoredByKey.set(record.recordKey, {
+      ...record,
+      ignoredAt: record.ignoredAt || new Date().toISOString()
+    });
+  });
+  ignoredRecords = Array.from(ignoredByKey.values());
+  allRecords = allRecords.filter((record) => !selectedKeys.has(record.recordKey));
+  const ignoredKeys = new Set(selected.map((record) => record.recordKey));
+  selectedKeys.clear();
+
+  await persistIgnoredRecords();
+  await removeKeysFromTotalRecords(ignoredKeys);
+  await persistCurrentRecords();
+  populateFilters();
+  renderTable();
+}
+
+function ignoredCreatedTime(record) {
+  return normalizeText(record.createdAt || record.importedAt || record.ignoredAt || record.applicationDate || record.updatedDate || '-');
+}
+
+function renderIgnoredRecordsModal() {
+  if (!ignoredRecordsBox) return;
+  if (!ignoredRecords.length) {
+    ignoredRecordsBox.innerHTML = '<div class="empty">暂无忽略记录。</div>';
+    return;
+  }
+  ignoredRecordsBox.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th class="source">来源</th>
+          <th class="company">公司</th>
+          <th class="job">岗位</th>
+          <th class="date">创建时间</th>
+          <th class="action">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${ignoredRecords.map((record) => `
+          <tr>
+            <td class="source-cell">${escapeHtml(record.sourceName)}</td>
+            <td class="company-cell">${escapeHtml(record.companyName)}</td>
+            <td class="job-cell">${escapeHtml(record.jobName)}</td>
+            <td class="date-cell">${escapeHtml(ignoredCreatedTime(record))}</td>
+            <td class="action-cell"><button class="secondary restore-ignored-record" data-key="${escapeHtml(record.recordKey)}">恢复</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+
+  ignoredRecordsBox.querySelectorAll('.restore-ignored-record').forEach((button) => {
+    button.addEventListener('click', () => restoreIgnoredRecord(button.dataset.key));
+  });
+}
+
+async function restoreIgnoredRecord(recordKey) {
+  const record = ignoredRecords.find((item) => item.recordKey === recordKey);
+  if (!record) return;
+  ignoredRecords = ignoredRecords.filter((item) => item.recordKey !== recordKey);
+  const restored = { ...record };
+  delete restored.ignoredAt;
+  const byKey = new Map(allRecords.map((item) => [item.recordKey, item]));
+  byKey.set(recordKey, restored);
+  allRecords = Array.from(byKey.values()).map((item, index) => ({ ...item, index: index + 1 }));
+  selectedKeys.delete(recordKey);
+  await persistIgnoredRecords();
+  await persistCurrentRecords();
+  populateFilters();
+  renderTable();
+  renderIgnoredRecordsModal();
+}
+
 function saveEditableValue(recordKey, field, value) {
   const record = allRecords.find((item) => item.recordKey === recordKey);
   if (!record) return;
@@ -424,6 +535,14 @@ function updateDeleteButton() {
   if (!deleteSelectedBtn) return;
   deleteSelectedBtn.textContent = selectedKeys.size ? `删除选中（${selectedKeys.size}）` : '删除选中';
   deleteSelectedBtn.disabled = selectedKeys.size === 0;
+  if (ignoreSelectedBtn) {
+    ignoreSelectedBtn.textContent = selectedKeys.size ? `忽略选中（${selectedKeys.size}）` : '忽略选中';
+    ignoreSelectedBtn.disabled = selectedKeys.size === 0;
+  }
+  if (ignoredRecordsBtn) {
+    ignoredRecordsBtn.style.display = mode === 'overview' ? '' : 'none';
+    ignoredRecordsBtn.textContent = ignoredRecords.length ? `忽略记录（${ignoredRecords.length}）` : '忽略记录';
+  }
 }
 
 function renderTable() {
@@ -469,8 +588,9 @@ function renderTable() {
 }
 
 async function loadAndRenderLatest() {
-  const result = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatExtractionStatus', 'jobChatRecords', 'bossChatStatsLatest']);
+  const result = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatExtractionStatus', 'jobChatRecords', 'bossChatStatsLatest', 'jobChatIgnoredRecords']);
   extractionStatus = result.jobChatExtractionStatus || null;
+  ignoredRecords = Array.isArray(result.jobChatIgnoredRecords) ? result.jobChatIgnoredRecords.map(normalizeRecord) : [];
 
   if (mode === 'sync') {
     latestData = result.jobChatPendingRecords || result.bossChatStatsLatest || { total: 0, records: [] };
@@ -500,8 +620,10 @@ async function loadAndRenderLatest() {
     }
   } else {
     const records = Array.isArray(result.jobChatRecords) ? result.jobChatRecords : [];
-    latestData = { ...(result.bossChatStatsLatest || {}), siteTitle: '招聘沟通记录总览', sourceName: '全部来源', total: records.length, records };
-    allRecords = records.map(normalizeRecord);
+    const ignoredKeys = new Set(ignoredRecords.map((record) => record.recordKey));
+    const visibleRecords = records.map(normalizeRecord).filter((record) => !ignoredKeys.has(record.recordKey));
+    latestData = { ...(result.bossChatStatsLatest || {}), siteTitle: '招聘沟通记录总览', sourceName: '全部来源', total: visibleRecords.length, records: visibleRecords };
+    allRecords = visibleRecords;
   }
 
   configurePageMode();
@@ -588,7 +710,7 @@ async function importCsvFile(file) {
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (changes.jobChatExtractionStatus || changes.bossChatStatsLatest || changes.jobChatRecords || changes.jobChatPendingRecords) {
+  if (changes.jobChatExtractionStatus || changes.bossChatStatsLatest || changes.jobChatRecords || changes.jobChatPendingRecords || changes.jobChatIgnoredRecords) {
     loadAndRenderLatest();
   }
 });
@@ -627,6 +749,27 @@ deleteSelectedBtn.addEventListener('click', async () => {
   populateFilters();
   renderTable();
 });
+
+if (ignoreSelectedBtn) {
+  ignoreSelectedBtn.addEventListener('click', ignoreSelectedRecords);
+}
+
+if (ignoredRecordsBtn) {
+  ignoredRecordsBtn.addEventListener('click', () => {
+    renderIgnoredRecordsModal();
+    ignoredModal?.classList.add('show');
+  });
+}
+
+if (closeIgnoredModalBtn) {
+  closeIgnoredModalBtn.addEventListener('click', () => ignoredModal?.classList.remove('show'));
+}
+
+if (ignoredModal) {
+  ignoredModal.addEventListener('click', (event) => {
+    if (event.target === ignoredModal) ignoredModal.classList.remove('show');
+  });
+}
 
 
 
