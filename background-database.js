@@ -17,6 +17,7 @@
       recruiterName: normalizeText(rawRecord.recruiterName),
       recruiterTitle: normalizeText(rawRecord.recruiterTitle),
       lastMessage: normalizeText(rawRecord.lastMessage),
+      messageStatus: normalizeText(rawRecord.messageStatus || ''),
       updatedAt: new Date().toISOString()
     };
     record.recordKey = makeRecordKey(record);
@@ -78,6 +79,7 @@
 
   async function savePendingExtraction(extractedData, site) {
     const incoming = (extractedData.records || []).map((item) => prepareRecord(item, site));
+    const summary = extractedData.syncSummary || {};
     const pendingData = {
       pageTitle: extractedData.pageTitle || '',
       pageUrl: extractedData.pageUrl || '',
@@ -87,7 +89,17 @@
       sourceName: site.source,
       total: incoming.length,
       records: incoming.map((record, index) => ({ ...record, index: index + 1 })),
-      syncSummary: { fetched: incoming.length, inserted: 0, updated: 0, saved: false, interrupted: Boolean(extractedData.interrupted), completed: !extractedData.interrupted, synced: incoming.length, sourceTotal: Number(extractedData.sourceTotal || extractedData.total || incoming.length) }
+      syncSummary: {
+        fetched: incoming.length,
+        inserted: Number(summary.inserted || 0),
+        updated: Number(summary.updated || 0),
+        updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
+        saved: false,
+        interrupted: Boolean(extractedData.interrupted),
+        completed: !extractedData.interrupted,
+        synced: Number(summary.synced || extractedData.synced || incoming.length),
+        sourceTotal: Number(extractedData.sourceTotal || extractedData.total || incoming.length)
+      }
     };
 
     await chrome.storage.local.set({
@@ -101,6 +113,7 @@
   async function savePartialExtraction(partial) {
     const site = siteByKey(partial.siteKey) || siteByKey('liepin');
     const incoming = (partial.records || []).map((item) => prepareRecord(item, site));
+    const summary = partial.syncSummary || {};
     const pendingData = {
       pageTitle: partial.pageTitle || '',
       pageUrl: partial.pageUrl || '',
@@ -112,8 +125,9 @@
       records: incoming.map((record, index) => ({ ...record, index: index + 1 })),
       syncSummary: {
         fetched: incoming.length,
-        inserted: 0,
-        updated: 0,
+        inserted: Number(summary.inserted || 0),
+        updated: Number(summary.updated || 0),
+        updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
         saved: false,
         interrupted: Boolean(partial.interrupted),
         completed: Boolean(partial.completed),
@@ -146,7 +160,13 @@
       extractedAt: new Date().toISOString(),
       total: merged.records.length,
       records: merged.records,
-      syncSummary: { fetched: incoming.length, inserted: merged.inserted, updated: merged.updated, saved: true }
+      syncSummary: {
+        fetched: incoming.length,
+        inserted: merged.inserted,
+        updated: merged.updated,
+        updatedMsg: Number(pending?.syncSummary?.updatedMsg || pending?.syncSummary?.updated || merged.updated || 0),
+        saved: true
+      }
     };
     await chrome.storage.local.set({
       jobChatRecords: merged.records,

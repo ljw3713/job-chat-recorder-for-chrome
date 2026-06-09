@@ -16,9 +16,9 @@
   }
 
   function isTargetMethod(method, url) {
-    if (typeof url !== 'string') return false;
+    if (!isTarget(url)) return false;
     if (url.includes('/wapi/zprelation/friend/geekFilterByLabel')) return method === 'GET';
-    if (url.includes('/wapi/zprelation/friend/getGeekFriendList.json')) return method === 'POST';
+    if (url.includes('/wapi/zprelation/friend/getGeekFriendList.json')) return true;
     return false;
   }
 

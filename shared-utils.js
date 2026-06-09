@@ -10,6 +10,13 @@
     return `${y}-${m}-${d}`;
   }
 
+  function formatDateTime(date) {
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${formatDate(date)} ${hh}:${mm}:${ss}`;
+  }
+
   function addDays(date, days) {
     const copy = new Date(date);
     copy.setDate(copy.getDate() + days);
@@ -63,6 +70,7 @@
   globalThis.JobChatUtils = {
     normalizeText,
     formatDate,
+    formatDateTime,
     addDays,
     sleep,
     getHostname,

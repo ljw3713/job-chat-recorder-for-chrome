@@ -69,7 +69,11 @@ async function prepareSyncFromTab(tab) {
   const site = detectSupportedSite(tab.url || '');
   if (!site) throw new Error(unsupportedMessage(tab.url || ''));
 
-  await chrome.storage.local.set({ jobChatLiepinCancelRequested: true, jobChatCancelRequested: true });
+  await chrome.storage.local.set({
+    jobChatLiepinCancelRequested: true,
+    jobChatCancelRequested: true,
+    jobChatRequestLogs: []
+  });
   let response = await sendExtractMessage(tab.id, { ...site, messageType: 'JOB_CHAT_PREPARE_SYNC' });
   if (!response?.ok) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: CONTENT_SCRIPT_FILES });
@@ -77,6 +81,15 @@ async function prepareSyncFromTab(tab) {
   }
   if (!response?.ok) throw new Error(response?.error || `无法读取${site.source}列表。`);
   const total = Number(response.data?.sourceTotal || response.data?.total || 0);
+  const summary = response.data?.syncSummary || {};
+  const hasActionSummary = Number.isFinite(Number(summary.inserted)) || Number.isFinite(Number(summary.updatedMsg)) || Number.isFinite(Number(summary.updated));
+  const inserted = hasActionSummary ? Number(summary.inserted || 0) : 0;
+  const updatedMsg = hasActionSummary ? Number(summary.updatedMsg || summary.updated || 0) : 0;
+  const readyMessage = total === 0
+    ? `${site.source}没有待同步记录。`
+    : hasActionSummary
+      ? `已获取${site.source}列表，新增 ${inserted} 条，更新消息 ${updatedMsg} 条。请设置同步速率后点击“同步”。`
+      : `已获取${site.source}列表，共 ${total} 条。请设置同步速率后点击“同步”。`;
   const pendingData = {
     pageTitle: response.data?.pageTitle || '',
     pageUrl: response.data?.pageUrl || tab.url || '',
@@ -86,7 +99,7 @@ async function prepareSyncFromTab(tab) {
     sourceName: site.source,
     total: 0,
     records: [],
-    syncSummary: { fetched: 0, inserted: 0, updated: 0, saved: false, interrupted: false, completed: total === 0, synced: 0, sourceTotal: total }
+    syncSummary: { fetched: 0, inserted, updated: updatedMsg, updatedMsg, saved: false, interrupted: false, completed: total === 0, synced: 0, sourceTotal: total }
   };
   await chrome.storage.local.set({
     jobChatPendingRecords: pendingData,
@@ -99,7 +112,10 @@ async function prepareSyncFromTab(tab) {
       startedAt: new Date().toISOString(),
       synced: 0,
       total,
-      message: total === 0 ? `${site.source}没有待同步记录。` : `已获取${site.source}列表，共 ${total} 条。请设置每秒同步限制后点击“同步”。`
+      inserted,
+      updated: updatedMsg,
+      updatedMsg,
+      message: readyMessage
     }
   });
   return pendingData;
@@ -111,7 +127,11 @@ async function extractFromTab(tab) {
   const site = detectSupportedSite(tab.url || '');
   if (!site) throw new Error(unsupportedMessage(tab.url || ''));
 
-  await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
+  await chrome.storage.local.set({
+    jobChatLiepinCancelRequested: false,
+    jobChatCancelRequested: false,
+    jobChatRequestLogs: []
+  });
 
   await chrome.storage.local.set({
     jobChatExtractionStatus: {
@@ -137,6 +157,9 @@ async function extractFromTab(tab) {
 
   const data = await globalThis.JobChatBackgroundDb.savePendingExtraction(response.data || {}, site);
   const summary = data.syncSummary || {};
+  const actionText = Number(summary.inserted || 0) || Number(summary.updatedMsg || summary.updated || 0)
+    ? `新增 ${summary.inserted || 0} 条，更新消息 ${summary.updatedMsg || summary.updated || 0} 条`
+    : `同步 ${summary.fetched || 0} 条`;
 
   await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
 
@@ -148,7 +171,10 @@ async function extractFromTab(tab) {
       sourceName: site.source,
       finishedAt: new Date().toISOString(),
       total: data.records?.length || 0,
-      message: summary.interrupted ? `已中断${site.source}同步，已同步 ${summary.synced || data.records?.length || 0} / ${summary.sourceTotal || data.records?.length || 0} 条。可继续同步。` : `本次同步 ${summary.fetched || 0} 条。请在同步结果页确认后保存到总记录。`
+      inserted: Number(summary.inserted || 0),
+      updated: Number(summary.updated || 0),
+      updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
+      message: summary.interrupted ? `已中断${site.source}同步，已处理 ${summary.synced || 0} / ${summary.sourceTotal || data.records?.length || 0} 条，${actionText}。可继续同步。` : `本次${actionText}。请在同步结果页确认后保存到总记录。`
     }
   });
 
@@ -241,6 +267,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         startedAt: progress.startedAt || new Date().toISOString(),
         synced: Number(progress.synced || 0),
         total: Number(progress.total || 0),
+        inserted: Number(progress.inserted || 0),
+        updated: Number(progress.updated || 0),
+        updatedMsg: Number(progress.updatedMsg || progress.updated || 0),
         message: progress.message || `正在提取${sourceName}沟通记录... 已同步 ${Number(progress.synced || 0)} / ${Number(progress.total || 0)} 条`
       }
     }).then(() => sendResponse({ ok: true }));

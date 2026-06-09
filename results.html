@@ -34,12 +34,13 @@
     th.select, td.select-cell { width: 40px; min-width: 40px; max-width: 40px; padding-left: 12px; padding-right: 6px; text-align: center; box-sizing: border-box; }
     th.select input, td.select-cell input { width: 16px; height: 16px; margin: 0; vertical-align: middle; cursor: pointer; }
     th.source, td.source-cell { width: 8%; min-width: 72px; box-sizing: border-box; }
-    th.company, td.company-cell { width: 13%; }
-    th.job, td.job-cell { width: 17%; }
+    th.company, td.company-cell { width: 12%; }
+    th.job, td.job-cell { width: 15%; }
     th.date, td.date-cell { width: 8%; }
-    th.note, td.note-cell { width: 11%; }
+    th.note, td.note-cell { width: 10%; }
+    th.status, td.status-cell { width: 90px; }
     th.recruiter, td.recruiter-cell { width: 12%; }
-    th.message, td.message-cell { width: 23%; }
+    th.message, td.message-cell { width: 21%; }
     td.editable { cursor: text; min-height: 20px; }
     td.editable:hover { background: #fff7ed; }
     td.editable.editing { background: #fffbeb; outline: 2px solid #f59e0b; outline-offset: -2px; }
@@ -59,6 +60,8 @@
     .modal-body { padding: 16px 18px; }
     .modal table { margin-bottom: 0; }
     th.action, td.action-cell { width: 90px; }
+    .floating-log-btn { position: fixed; left: 18px; bottom: 18px; z-index: 30; box-shadow: 0 10px 24px rgba(17,24,39,.18); }
+    .log-box { background: #111827; color: #f9fafb; border-radius: 8px; padding: 14px; overflow: auto; max-height: 62vh; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -86,8 +89,15 @@
         <button id="importCsvBtn" class="secondary" style="display:none;">导入 CSV</button>
         <input id="importCsvInput" type="file" accept=".csv,text/csv" style="display:none;" />
         <button id="copyJsonBtn" class="light" style="display:none;">复制 JSON</button>
-        <label class="filter-box" style="display:none;">每秒同步
-          <input id="syncRateLimit" type="number" min="1" max="10" value="2" style="width:52px;border:0;outline:none;background:transparent;font-size:14px;" />
+        <label class="filter-box" id="syncRateBox" style="display:none;">每
+          <select id="syncRateUnit">
+            <option value="second">秒</option>
+            <option value="minute">分</option>
+            <option value="hour">时</option>
+          </select>
+          同步
+          <input id="syncRateLimit" type="number" min="1" max="3600" value="2" style="width:64px;border:0;outline:none;background:transparent;font-size:14px;" />
+          条
         </label>
         <button id="startSyncBtn" class="secondary" style="display:none;">同步</button>
         <button id="cancelSyncBtn" class="danger" style="display:none;">中断</button>
@@ -99,6 +109,13 @@
         </label>
         <label class="filter-box">公司
           <select id="companyFilter"><option value="">全部公司</option></select>
+        </label>
+        <label class="filter-box">消息状态
+          <select id="messageStatusFilter">
+            <option value="">全部状态</option>
+            <option value="0">未读</option>
+            <option value="1">已读</option>
+          </select>
         </label>
         <label class="filter-box">时间
           <select id="dateFieldFilter">
@@ -128,6 +145,7 @@
     <div class="section-title">JSON 预览</div>
     <pre id="jsonBox">loading...</pre>
   </main>
+  <button id="requestLogsBtn" class="light floating-log-btn" style="display:none;">请求日志</button>
   <div id="ignoredModal" class="modal-backdrop">
     <div class="modal">
       <div class="modal-header">
@@ -135,6 +153,17 @@
         <button id="closeIgnoredModalBtn" class="light">关闭</button>
       </div>
       <div id="ignoredRecordsBox" class="modal-body"></div>
+    </div>
+  </div>
+  <div id="requestLogsModal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>请求日志</h2>
+        <button id="closeRequestLogsModalBtn" class="light">关闭</button>
+      </div>
+      <div class="modal-body">
+        <pre id="requestLogsBox" class="log-box">暂无请求日志。</pre>
+      </div>
     </div>
   </div>
   <script src="shared-utils.js"></script>

@@ -8,6 +8,7 @@ const downloadJsonBtn = document.getElementById('downloadJsonBtn');
 const todayOnly = document.getElementById('todayOnly');
 const sourceFilter = document.getElementById('sourceFilter');
 const companyFilter = document.getElementById('companyFilter');
+const messageStatusFilter = document.getElementById('messageStatusFilter');
 const dateFieldFilter = document.getElementById('dateFieldFilter');
 const dateFrom = document.getElementById('dateFrom');
 const dateTo = document.getElementById('dateTo');
@@ -23,6 +24,8 @@ const ignoredRecordsBtn = document.getElementById('ignoredRecordsBtn');
 const cancelSyncBtn = document.getElementById('cancelSyncBtn');
 const resumeSyncBtn = document.getElementById('resumeSyncBtn');
 const pageHint = document.getElementById('pageHint');
+const syncRateBox = document.getElementById('syncRateBox');
+const syncRateUnit = document.getElementById('syncRateUnit');
 const syncRateLimit = document.getElementById('syncRateLimit');
 const startSyncBtn = document.getElementById('startSyncBtn');
 const importCsvBtn = document.getElementById('importCsvBtn');
@@ -30,10 +33,14 @@ const importCsvInput = document.getElementById('importCsvInput');
 const ignoredModal = document.getElementById('ignoredModal');
 const ignoredRecordsBox = document.getElementById('ignoredRecordsBox');
 const closeIgnoredModalBtn = document.getElementById('closeIgnoredModalBtn');
+const requestLogsBtn = document.getElementById('requestLogsBtn');
+const requestLogsModal = document.getElementById('requestLogsModal');
+const requestLogsBox = document.getElementById('requestLogsBox');
+const closeRequestLogsModalBtn = document.getElementById('closeRequestLogsModalBtn');
 
 const mode = new URLSearchParams(location.search).get('mode') === 'sync' ? 'sync' : 'overview';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
-const { recruiterInfo, communicationDate, makeRecordKey } = globalThis.JobChatRecords;
+const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey } = globalThis.JobChatRecords;
 const ResultsDb = globalThis.JobChatResultsDb;
 
 let latestData = null;
@@ -43,8 +50,37 @@ let currentRecords = [];
 let ignoredRecords = [];
 let selectedKeys = new Set();
 
-const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者信息', '原消息'];
+const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者', '状态', '原消息'];
 const exportHeaders = ['唯一索引id', ...tableHeaders];
+
+function normalizeMessageStatus(value) {
+  const text = normalizeText(value);
+  if (text === '已读' || text.startsWith('1')) return '1';
+  if (text === '未读' || text.startsWith('0')) return '0';
+  return '';
+}
+
+function displayDate(value) {
+  return displayRecordDate(value || '');
+}
+
+function exportDateTime(value) {
+  return normalizeText(value) ? normalizeRecordDate(value) : '';
+}
+
+function messageStatusText(value) {
+  return normalizeMessageStatus(value) === '1' ? '已读' : '未读';
+}
+
+function inferMessageStatus(record) {
+  const explicit = normalizeMessageStatus(record?.messageStatus);
+  if (explicit) return explicit;
+  const bossRawStatus = normalizeText(record?.boss?.lastMessageInfo?.status);
+  if (bossRawStatus) return bossRawStatus === '1' ? '0' : '1';
+  const liepinRead = normalizeText(record?.liepin?.oppositeRead);
+  if (liepinRead) return liepinRead === '1' ? '1' : '0';
+  return '';
+}
 
 function recordKeyOf(record) {
   return normalizeText(record?.recordKey || makeRecordKey(record));
@@ -64,6 +100,7 @@ function normalizeRecord(record, index) {
     recruiterName: normalizeText(record.recruiterName),
     recruiterTitle: normalizeText(record.recruiterTitle),
     lastMessage: normalizeText(record.lastMessage),
+    messageStatus: inferMessageStatus(record),
     note: normalizeText(record.note || ''),
     applicationDate,
     updatedDate: normalizeText(record.updatedDate || updatedDate)
@@ -73,7 +110,7 @@ function normalizeRecord(record, index) {
 }
 
 function isTodayRecord(record) {
-  return record.updatedDate === formatDate(new Date());
+  return displayDate(record.updatedDate) === formatDate(new Date());
 }
 
 function boldNumber(value) {
@@ -92,15 +129,32 @@ function isInterruptibleContext() {
 function configurePageMode() {
   if (mode === 'sync') {
     saveBtn.style.display = '';
+    if (requestLogsBtn) requestLogsBtn.style.display = '';
     if (importCsvBtn) importCsvBtn.style.display = 'none';
     overviewBtn.textContent = '查看总记录';
     pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。岗位和备注列可双击编辑。';
   } else {
     saveBtn.style.display = 'none';
+    if (requestLogsBtn) requestLogsBtn.style.display = 'none';
     if (importCsvBtn) importCsvBtn.style.display = '';
     overviewBtn.textContent = '刷新总览';
     pageHint.textContent = '记录总览页：显示所有已保存记录，可筛选、排序、批量删除、导出当前页面结果。岗位和备注列可双击编辑。';
   }
+}
+
+function formatRequestLog(entry, index) {
+  const copy = { ...(entry || {}) };
+  const time = copy.time || '';
+  delete copy.time;
+  return `[${index + 1}] ${time}\n${JSON.stringify(copy, null, 2)}`;
+}
+
+async function showRequestLogs() {
+  if (!requestLogsBox || !requestLogsModal) return;
+  const store = await chrome.storage.local.get(['jobChatRequestLogs']);
+  const logs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
+  requestLogsBox.textContent = logs.length ? logs.map(formatRequestLog).join('\n\n') : '暂无请求日志。';
+  requestLogsModal.classList.add('show');
 }
 
 function configureTodayOnly() {
@@ -118,13 +172,14 @@ function updateSyncButtons() {
   const interrupted = Boolean(latestData?.syncSummary?.interrupted || extractionStatus?.interrupted);
   const completed = Boolean(latestData?.syncSummary?.completed);
 
-  if (syncRateLimit) syncRateLimit.closest('.filter-box').style.display = isSync && isSupported ? '' : 'none';
+  if (syncRateBox) syncRateBox.style.display = isSync && isSupported ? '' : 'none';
   if (startSyncBtn) startSyncBtn.style.display = isSync && isSupported && isReady ? '' : 'none';
   cancelSyncBtn.style.display = isSync && isSupported && isLoading ? '' : 'none';
   resumeSyncBtn.style.display = isSync && isSupported && interrupted && !isLoading && !completed ? '' : 'none';
 }
 
 function progressMessage(status) {
+  if (status?.message) return status.message;
   if (status?.siteKey === 'liepin' || status?.siteKey === 'boss') {
     const synced = Number(status.synced || 0);
     const total = Number(status.total || 0);
@@ -154,10 +209,17 @@ function renderReady(status) {
   meta.innerHTML = `来源：${escapeHtml(source)} · 待同步：${boldNumber(status?.total || 0)} 条`;
   extractionStatus = status || extractionStatus;
   configureTodayOnly();
-  setStatus('ready', status?.message || '已获取待同步列表，请点击“同步”。');
+  const message = status?.message || '已获取待同步列表，请点击“同步”。';
+  setStatus('ready', message);
   updateSyncButtons();
-  tableBox.innerHTML = `<div class="empty">已获取待同步记录 ${escapeHtml(status?.total || 0)} 条。设置每秒同步限制后点击“同步”。</div>`;
-  jsonBox.textContent = JSON.stringify({ sourceName: source, total: status?.total || 0, state: 'ready' }, null, 2);
+  tableBox.innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+  jsonBox.textContent = JSON.stringify({
+    sourceName: source,
+    total: status?.total || 0,
+    inserted: status?.inserted,
+    updatedMsg: status?.updatedMsg,
+    state: 'ready'
+  }, null, 2);
 }
 
 function renderLoading(status) {
@@ -208,11 +270,13 @@ function applyFilters() {
   if (source) records = records.filter((r) => r.sourceName === source);
   const company = companyFilter.value;
   if (company) records = records.filter((r) => r.companyName === company);
+  const messageStatus = messageStatusFilter?.value || '';
+  if (messageStatus) records = records.filter((r) => normalizeMessageStatus(r.messageStatus) === messageStatus);
   const dateField = dateFieldFilter.value || 'updatedDate';
   const from = dateFrom.value;
   const to = dateTo.value;
-  if (from) records = records.filter((r) => String(r[dateField] || '') >= from);
-  if (to) records = records.filter((r) => String(r[dateField] || '') <= to);
+  if (from) records = records.filter((r) => displayDate(r[dateField]) >= from);
+  if (to) records = records.filter((r) => displayDate(r[dateField]) <= to);
 
   const [field, direction] = (sortBy.value || 'updatedDate-desc').split('-');
   records.sort((a, b) => {
@@ -229,9 +293,10 @@ function toOutputRows() {
     sourceName: normalizeText(r.sourceName),
     companyName: normalizeText(r.companyName),
     jobName: normalizeText(r.jobName),
-    applicationDate: normalizeText(r.applicationDate),
-    updatedDate: normalizeText(r.updatedDate),
+    applicationDate: exportDateTime(r.applicationDate),
+    updatedDate: exportDateTime(r.updatedDate),
     note: normalizeText(r.note),
+    messageStatus: messageStatusText(r.messageStatus),
     recruiterInfo: recruiterInfo(r),
     lastMessage: normalizeText(r.lastMessage)
   }));
@@ -258,7 +323,8 @@ function updateMeta() {
   const visible = currentRecords.length;
   const source = latestData?.sourceName || '-';
   const summary = latestData?.syncSummary;
-  const syncText = summary?.saved ? ` · 保存结果：新增 ${summary.inserted || 0} 条，更新 ${summary.updated || 0} 条` : '';
+  const updatedMsg = summary?.updatedMsg ?? summary?.updated ?? 0;
+  const syncText = summary?.saved ? ` · 保存结果：新增 ${summary.inserted || 0} 条，更新消息 ${updatedMsg} 条` : '';
   const title = mode === 'sync' ? (latestData?.siteTitle || '同步结果') : '招聘沟通记录总览';
   pageHeading.textContent = title;
   document.title = title;
@@ -277,12 +343,12 @@ function updateJsonBox() {
 }
 
 function toTsv(includeHeader = true) {
-  const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.lastMessage]);
+  const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.messageStatus, r.lastMessage]);
   return ResultsDb.tsv(exportHeaders, rows, includeHeader);
 }
 
 function toCsv() {
-  const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.lastMessage]);
+  const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.messageStatus, r.lastMessage]);
   return ResultsDb.csv(exportHeaders, rows);
 }
 
@@ -417,7 +483,7 @@ async function restoreIgnoredRecord(recordKey) {
 function saveEditableValue(recordKey, field, value) {
   const record = allRecords.find((item) => item.recordKey === recordKey);
   if (!record) return;
-  record[field] = normalizeText(value);
+  record[field] = field === 'messageStatus' ? normalizeMessageStatus(value) : normalizeText(value);
   if (field === 'jobName') record.recordKey = makeRecordKey(record);
   persistCurrentRecords();
   renderTable();
@@ -516,7 +582,8 @@ function renderTable() {
           <th class="date">申请时间</th>
           <th class="date">更新时间</th>
           <th class="note">备注</th>
-          <th class="recruiter">招聘者信息</th>
+          <th class="recruiter">招聘者</th>
+          <th class="status">状态</th>
           <th class="message">原消息</th>
         </tr>
       </thead>
@@ -527,10 +594,11 @@ function renderTable() {
             <td class="source-cell">${escapeHtml(r.sourceName)}</td>
             <td class="company-cell">${escapeHtml(r.companyName)}</td>
             <td class="job-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="jobName" title="双击编辑岗位信息">${escapeHtml(r.jobName)}</td>
-            <td class="date-cell">${escapeHtml(r.applicationDate)}</td>
-            <td class="date-cell">${escapeHtml(r.updatedDate)}</td>
+            <td class="date-cell">${escapeHtml(displayDate(r.applicationDate))}</td>
+            <td class="date-cell">${escapeHtml(displayDate(r.updatedDate))}</td>
             <td class="note-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="note" title="双击编辑备注">${escapeHtml(r.note || '')}</td>
             <td class="recruiter-cell">${escapeHtml(recruiterInfo(r))}</td>
+            <td class="status-cell">${escapeHtml(messageStatusText(r.messageStatus))}</td>
             <td class="message-cell">${escapeHtml(r.lastMessage)}</td>
           </tr>`).join('')}
       </tbody>
@@ -617,7 +685,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
-[todayOnly, sourceFilter, companyFilter, dateFieldFilter, dateFrom, dateTo, sortBy].forEach((el) => el?.addEventListener('change', () => {
+[todayOnly, sourceFilter, companyFilter, messageStatusFilter, dateFieldFilter, dateFrom, dateTo, sortBy].forEach((el) => el?.addEventListener('change', () => {
   selectedKeys.clear();
   renderTable();
 }));
@@ -673,24 +741,44 @@ if (ignoredModal) {
   });
 }
 
+if (requestLogsBtn) {
+  requestLogsBtn.addEventListener('click', showRequestLogs);
+}
+
+if (closeRequestLogsModalBtn) {
+  closeRequestLogsModalBtn.addEventListener('click', () => requestLogsModal?.classList.remove('show'));
+}
+
+if (requestLogsModal) {
+  requestLogsModal.addEventListener('click', (event) => {
+    if (event.target === requestLogsModal) requestLogsModal.classList.remove('show');
+  });
+}
 
 
-if (syncRateLimit) {
-  ResultsDb.loadSyncRateLimit().then((rate) => {
-    syncRateLimit.value = String(rate || 2);
+
+function normalizeSyncRateSettings() {
+  const unit = ['second', 'minute', 'hour'].includes(syncRateUnit?.value) ? syncRateUnit.value : 'second';
+  const count = Math.max(1, Math.min(3600, Math.floor(Number(syncRateLimit?.value || 2))));
+  if (syncRateUnit) syncRateUnit.value = unit;
+  if (syncRateLimit) syncRateLimit.value = String(count);
+  return { unit, count };
+}
+
+if (syncRateLimit || syncRateUnit) {
+  ResultsDb.loadSyncRateSettings().then((settings) => {
+    if (syncRateUnit) syncRateUnit.value = settings.unit || 'second';
+    if (syncRateLimit) syncRateLimit.value = String(settings.count || 2);
   });
-  syncRateLimit.addEventListener('change', async () => {
-    const rate = Math.max(1, Math.min(10, Number(syncRateLimit.value || 2)));
-    syncRateLimit.value = String(rate);
-    await ResultsDb.saveSyncRateLimit(rate);
-  });
+  [syncRateLimit, syncRateUnit].forEach((el) => el?.addEventListener('change', async () => {
+    await ResultsDb.saveSyncRateSettings(normalizeSyncRateSettings());
+  }));
 }
 
 if (startSyncBtn) {
   startSyncBtn.addEventListener('click', async () => {
     startSyncBtn.disabled = true;
-    const rate = Math.max(1, Math.min(10, Number(syncRateLimit?.value || 2)));
-    await ResultsDb.saveSyncRateLimit(rate);
+    await ResultsDb.saveSyncRateSettings(normalizeSyncRateSettings());
     const response = await chrome.runtime.sendMessage({ type: 'START_PREPARED_SYNC' });
     if (!response?.ok) alert(response?.error || '同步失败');
     startSyncBtn.disabled = false;

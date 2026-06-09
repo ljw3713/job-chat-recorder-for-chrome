@@ -1,5 +1,5 @@
 (function () {
-  const { normalizeText, formatDate, getCookieValue, sleep } = globalThis.JobChatUtils;
+  const { normalizeText, formatDateTime, getCookieValue, sleep } = globalThis.JobChatUtils;
   const {
     filterLiepinRecentContacts,
     getSyncDelayMs,
@@ -41,8 +41,41 @@
     [
       record?.liepin?.oppositeImId,
       record?.liepin?.contactKey,
-      record?.recordKey
+      record?.recordKey,
+      record?.liepin?.latestMsgId
     ].forEach((key) => addLiepinKeyVariants(keys, key));
+  }
+
+  function indexLiepinRecords(records) {
+    const byKey = new Map();
+    (records || []).forEach((record) => {
+      const keys = new Set();
+      addLiepinRecordKeys(keys, record);
+      keys.forEach((key) => {
+        if (!byKey.has(key)) byKey.set(key, record);
+      });
+    });
+    return byKey;
+  }
+
+  function findLiepinRecordForItem(recordsByKey, item) {
+    for (const key of liepinItemKeys(item)) {
+      const record = recordsByKey.get(key);
+      if (record) return record;
+    }
+    return null;
+  }
+
+  function liepinLatestMsgId(record) {
+    return normalizeText(record?.liepin?.latestMsgId || record?.latestMsgId || '');
+  }
+
+  function liepinMessageStatusFromItem(item) {
+    return normalizeText(item?.oppositeRead) === '1' ? '1' : '0';
+  }
+
+  function liepinMessageStatusFromRecord(record) {
+    return normalizeText(record?.messageStatus || record?.liepin?.oppositeRead || '');
   }
 
   function liepinItemKeys(item) {
@@ -57,8 +90,22 @@
     return [...keys];
   }
 
-  async function saveLiepinPartial(records, synced, total, interrupted, completed) {
-    return savePartial('liepin', '猎聘沟通记录', '猎聘', records, synced, total, interrupted, completed);
+  function liepinSyncMessage(synced, total, insertedCount, updatedMsgCount) {
+    return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，新增 ${insertedCount} 条，更新消息 ${updatedMsgCount} 条`;
+  }
+
+  function liepinSyncSummary(insertedCount, updatedMsgCount) {
+    return {
+      inserted: insertedCount,
+      updated: updatedMsgCount,
+      updatedMsg: updatedMsgCount
+    };
+  }
+
+  async function saveLiepinPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0) {
+    return savePartial('liepin', '猎聘沟通记录', '猎聘', records, synced, total, interrupted, completed, {
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount)
+    });
   }
 
   function getLiepinImId() {
@@ -137,6 +184,41 @@
     return title || '';
   }
 
+  async function buildLiepinRecord(item, imId, index, existingRecord) {
+    const key = liepinContactKey(item);
+    const payloadInfo = parseLiepinLastPayload(item.lastPayload);
+    let preview = {};
+    try { preview = await fetchLiepinJobPreview(item.imId || imId, item.oppositeImId); } catch (_) { preview = {}; }
+
+    const jobTitle = preview.jobTitle || payloadInfo.jobTitle || '';
+    const jobSalary = preview.jobSalary || payloadInfo.jobSalary || '';
+    const companyName = preview.jobCompany || item.company || payloadInfo.jobCompany || '';
+    const lastMessage = payloadInfo.message || normalizeText(item.lastPayload || '');
+
+    return {
+      ...(existingRecord || {}),
+      index,
+      time: formatDateTime(new Date(Number(item.latestMsgTime))),
+      updatedAt: new Date().toISOString(),
+      recruiterName: normalizeText(item.name),
+      companyName: normalizeText(companyName),
+      recruiterTitle: normalizeText(item.title),
+      jobName: liepinJobText(jobTitle, jobSalary),
+      lastMessage,
+      messageStatus: liepinMessageStatusFromItem(item),
+      liepin: {
+        ...(existingRecord?.liepin || {}),
+        imId: item.imId || imId,
+        oppositeImId: item.oppositeImId || existingRecord?.liepin?.oppositeImId || '',
+        latestMsgId: item.latestMsgId || '',
+        latestMsgTime: item.latestMsgTime || '',
+        oppositeRead: normalizeText(item.oppositeRead || ''),
+        contactKey: key,
+        homePage: item.homePage || existingRecord?.liepin?.homePage || ''
+      }
+    };
+  }
+
   async function fetchLiepinContacts(imId) {
     const data = await postLiepinApi('com.liepin.im.c.contact.get-contact-list', {
       imUserType: '0',
@@ -166,77 +248,85 @@
     const savedRecords = Array.isArray(store.jobChatRecords) ? store.jobChatRecords.filter((record) => record?.siteKey === 'liepin' || record?.sourceName === '猎聘') : [];
     const ignoredRecords = (await readIgnoredRecords()).filter((record) => record?.siteKey === 'liepin' || record?.sourceName === '猎聘');
 
-    const savedKeys = new Set();
-    savedRecords.forEach((record) => addLiepinRecordKeys(savedKeys, record));
-    const pendingKeys = new Set();
-    pendingRecords.forEach((record) => addLiepinRecordKeys(pendingKeys, record));
+    const savedByKey = indexLiepinRecords(savedRecords);
+    const pendingByKey = indexLiepinRecords(pendingRecords);
     const ignoredKeys = new Set();
     ignoredRecords.forEach((record) => addLiepinRecordKeys(ignoredKeys, record));
     const contactsToSync = contacts.filter((item) => {
       const keys = liepinItemKeys(item);
-      return !keys.some((key) => savedKeys.has(key) || pendingKeys.has(key) || ignoredKeys.has(key));
+      if (keys.some((key) => ignoredKeys.has(key))) return false;
+      const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
+      if (!existingRecord) return true;
+      const latestMsgId = normalizeText(item?.latestMsgId || '');
+      const latestMsgChanged = Boolean(latestMsgId && liepinLatestMsgId(existingRecord) !== latestMsgId);
+      const statusChanged = liepinMessageStatusFromRecord(existingRecord) !== liepinMessageStatusFromItem(item);
+      return latestMsgChanged || statusChanged;
     });
-    return { contacts, contactsToSync, pendingRecords };
+    return { contacts, contactsToSync, pendingRecords, savedByKey, pendingByKey };
   }
 
   async function extractLiepinChatRecords() {
     const imId = getLiepinImId();
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘，并刷新页面后重试。');
 
-    const { contactsToSync, pendingRecords } = await getFilteredContacts(imId);
+    const { contactsToSync, pendingRecords, savedByKey, pendingByKey } = await getFilteredContacts(imId);
     const records = [...pendingRecords];
-    const totalToSync = records.length + contactsToSync.length;
+    const totalToSync = contactsToSync.length;
+    let syncedCount = 0;
+    let insertedCount = 0;
+    let updatedMsgCount = 0;
 
-    reportProgress('liepin', '猎聘沟通记录', '猎聘', records.length, totalToSync);
-    await saveLiepinPartial(records, records.length, totalToSync, false, records.length >= totalToSync);
+    reportProgress('liepin', '猎聘沟通记录', '猎聘', syncedCount, totalToSync, {
+      inserted: insertedCount,
+      updated: updatedMsgCount,
+      updatedMsg: updatedMsgCount,
+      message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
+    });
+    await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount);
 
     for (let i = 0; i < contactsToSync.length; i += 1) {
       const item = contactsToSync[i];
-      const key = liepinContactKey(item);
 
       if (await isCancelRequested()) {
-        await saveLiepinPartial(records, records.length, totalToSync, true, false);
+        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
           extractedAt: new Date().toISOString(),
           total: records.length,
+          synced: syncedCount,
           interrupted: true,
           sourceTotal: totalToSync,
+          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount),
           records
         };
       }
 
       if (records.length > 0) await sleep(await getSyncDelayMs());
 
-      const payloadInfo = parseLiepinLastPayload(item.lastPayload);
-      let preview = {};
-      try { preview = await fetchLiepinJobPreview(item.imId || imId, item.oppositeImId); } catch (_) { preview = {}; }
-
-      const jobTitle = preview.jobTitle || payloadInfo.jobTitle || '';
-      const jobSalary = preview.jobSalary || payloadInfo.jobSalary || '';
-      const companyName = preview.jobCompany || item.company || payloadInfo.jobCompany || '';
-      const lastMessage = payloadInfo.message || normalizeText(item.lastPayload || '');
-
-      records.push({
-        index: records.length + 1,
-        time: formatDate(new Date(Number(item.latestMsgTime))),
-        recruiterName: normalizeText(item.name),
-        companyName: normalizeText(companyName),
-        recruiterTitle: normalizeText(item.title),
-        jobName: liepinJobText(jobTitle, jobSalary),
-        lastMessage,
-        liepin: {
-          imId: item.imId || imId,
-          oppositeImId: item.oppositeImId || '',
-          latestMsgId: item.latestMsgId || '',
-          latestMsgTime: item.latestMsgTime || '',
-          contactKey: key,
-          homePage: item.homePage || ''
-        }
+      const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
+      const isUpdate = Boolean(existingRecord);
+      const existingIndex = records.findIndex((record) => liepinItemKeys(item).some((itemKey) => {
+        const recordKeys = new Set();
+        addLiepinRecordKeys(recordKeys, record);
+        return recordKeys.has(itemKey);
+      }));
+      const nextRecord = await buildLiepinRecord(item, imId, existingIndex >= 0 ? existingIndex + 1 : records.length + 1, existingRecord);
+      if (existingIndex >= 0) {
+        records[existingIndex] = nextRecord;
+      } else {
+        records.push(nextRecord);
+      }
+      syncedCount += 1;
+      if (isUpdate) updatedMsgCount += 1;
+      else insertedCount += 1;
+      reportProgress('liepin', '猎聘沟通记录', '猎聘', syncedCount, totalToSync, {
+        inserted: insertedCount,
+        updated: updatedMsgCount,
+        updatedMsg: updatedMsgCount,
+        message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
       });
-      reportProgress('liepin', '猎聘沟通记录', '猎聘', records.length, totalToSync);
-      await saveLiepinPartial(records, records.length, totalToSync, false, records.length >= totalToSync);
+      await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount);
     }
 
     return {
@@ -244,8 +334,10 @@
       pageUrl: location.href,
       extractedAt: new Date().toISOString(),
       total: records.length,
+      synced: syncedCount,
       interrupted: false,
       sourceTotal: totalToSync,
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount),
       records
     };
   }
@@ -253,8 +345,14 @@
   async function prepareLiepinSync() {
     const imId = getLiepinImId();
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘，并刷新页面后重试。');
-    const { contacts, contactsToSync } = await getFilteredContacts(imId);
-    return { list: contacts, needSync: contactsToSync.length };
+    const { contacts, contactsToSync, savedByKey, pendingByKey } = await getFilteredContacts(imId);
+    const insertedCount = contactsToSync.filter((item) => !findLiepinRecordForItem(pendingByKey, item) && !findLiepinRecordForItem(savedByKey, item)).length;
+    const updatedMsgCount = contactsToSync.length - insertedCount;
+    return {
+      list: contacts,
+      needSync: contactsToSync.length,
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount)
+    };
   }
 
   globalThis.JobChatLiepinExtractor = {

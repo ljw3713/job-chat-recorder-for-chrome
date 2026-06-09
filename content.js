@@ -31,12 +31,12 @@
     if (siteKey === 'boss' && detected === 'boss') {
       const result = await globalThis.JobChatBossExtractor.prepare();
       await writePreparedSourceList('boss', result.list);
-      return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, records: [] };
+      return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, syncSummary: result.syncSummary, records: [] };
     }
     if (siteKey === 'liepin' && detected === 'liepin') {
       const result = await globalThis.JobChatLiepinExtractor.prepare();
       await writePreparedSourceList('liepin', result.list);
-      return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, records: [] };
+      return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, syncSummary: result.syncSummary, records: [] };
     }
     return extractByCurrentSite(siteKey);
   }

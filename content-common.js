@@ -34,15 +34,18 @@
 
   async function getSyncDelayMs() {
     try {
-      const store = await chrome.storage.local.get(['jobChatSyncRateLimit']);
-      const rate = Math.max(1, Math.min(10, Number(store.jobChatSyncRateLimit || 2)));
-      return Math.ceil(1000 / rate);
+      const store = await chrome.storage.local.get(['jobChatSyncRateSettings', 'jobChatSyncRateLimit']);
+      const settings = store.jobChatSyncRateSettings || {};
+      const unit = ['second', 'minute', 'hour'].includes(settings.unit) ? settings.unit : 'second';
+      const count = Math.max(1, Math.min(3600, Math.floor(Number(settings.count || store.jobChatSyncRateLimit || 2))));
+      const unitMs = unit === 'hour' ? 60 * 60 * 1000 : unit === 'minute' ? 60 * 1000 : 1000;
+      return Math.ceil(unitMs / count);
     } catch (_) {
       return 500;
     }
   }
 
-  function reportProgress(siteKey, siteTitle, sourceName, synced, total) {
+  function reportProgress(siteKey, siteTitle, sourceName, synced, total, extra = {}) {
     try {
       chrome.runtime.sendMessage({
         type: 'JOB_CHAT_EXTRACTION_PROGRESS',
@@ -52,7 +55,8 @@
           sourceName,
           synced,
           total,
-          message: `正在提取${sourceName}沟通记录... 已同步 ${synced} / ${total} 条`
+          ...extra,
+          message: extra.message || `正在提取${sourceName}沟通记录... 已同步 ${synced} / ${total} 条`
         }
       });
     } catch (_) {}
@@ -67,7 +71,7 @@
     }
   }
 
-  async function savePartial(siteKey, siteTitle, sourceName, records, synced, total, interrupted, completed) {
+  async function savePartial(siteKey, siteTitle, sourceName, records, synced, total, interrupted, completed, extra = {}) {
     try {
       await chrome.runtime.sendMessage({
         type: 'JOB_CHAT_PARTIAL_RESULTS',
@@ -82,6 +86,7 @@
           total,
           interrupted: Boolean(interrupted),
           completed: Boolean(completed),
+          ...extra,
           records
         }
       });
@@ -110,6 +115,18 @@
     } catch (_) {}
   }
 
+  async function appendRequestLog(entry) {
+    try {
+      const store = await chrome.storage.local.get(['jobChatRequestLogs']);
+      const logs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
+      logs.push({
+        time: new Date().toISOString(),
+        ...entry
+      });
+      await chrome.storage.local.set({ jobChatRequestLogs: logs.slice(-80) });
+    } catch (_) {}
+  }
+
   function detectSiteByLocation() {
     const hostname = location.hostname;
     if (/(^|\.)zhipin\.com$/i.test(hostname)) return 'boss';
@@ -127,6 +144,7 @@
     savePartial,
     readIgnoredRecords,
     writePreparedSourceList,
+    appendRequestLog,
     detectSiteByLocation
   };
 })();

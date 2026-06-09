@@ -47,7 +47,7 @@
     const get = (row, name) => row[headers.indexOf(name)] || '';
     return rows.slice(1).filter((row) => row.some((cell) => normalizeText(cell))).map((row, index) => {
       const sourceName = get(row, '来源');
-      const recruiter = get(row, '招聘者信息');
+      const recruiter = get(row, '招聘者') || get(row, '招聘者信息');
       const [recruiterName, recruiterTitle] = recruiter.split('/').map((v) => normalizeText(v));
       const record = {
         index: index + 1,
@@ -59,6 +59,7 @@
         applicationDate: get(row, '申请时间'),
         updatedDate: get(row, '更新时间'),
         note: get(row, '备注'),
+        messageStatus: get(row, '状态') || get(row, '消息状态'),
         recruiterName,
         recruiterTitle: recruiterTitle || '',
         lastMessage: get(row, '原消息'),
@@ -99,13 +100,19 @@
     await chrome.storage.local.set(values);
   }
 
-  async function loadSyncRateLimit() {
-    const store = await chrome.storage.local.get(['jobChatSyncRateLimit']);
-    return Number(store.jobChatSyncRateLimit || 2);
+  function normalizeSyncRateSettings(rawSettings, legacyRate) {
+    const unit = ['second', 'minute', 'hour'].includes(rawSettings?.unit) ? rawSettings.unit : 'second';
+    const count = Math.max(1, Math.min(3600, Math.floor(Number(rawSettings?.count || legacyRate || 2))));
+    return { unit, count };
   }
 
-  async function saveSyncRateLimit(rate) {
-    await chrome.storage.local.set({ jobChatSyncRateLimit: rate });
+  async function loadSyncRateSettings() {
+    const store = await chrome.storage.local.get(['jobChatSyncRateSettings', 'jobChatSyncRateLimit']);
+    return normalizeSyncRateSettings(store.jobChatSyncRateSettings, store.jobChatSyncRateLimit);
+  }
+
+  async function saveSyncRateSettings(settings) {
+    await chrome.storage.local.set({ jobChatSyncRateSettings: normalizeSyncRateSettings(settings) });
   }
 
   globalThis.JobChatResultsDb = {
@@ -118,7 +125,7 @@
     saveIgnoredRecords,
     loadTotalRecords,
     saveMultiple,
-    loadSyncRateLimit,
-    saveSyncRateLimit
+    loadSyncRateSettings,
+    saveSyncRateSettings
   };
 })();

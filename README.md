@@ -19,7 +19,7 @@
 - `com.liepin.im.c.contact.get-contact-list` 获取最近沟通列表
 - `com.liepin.im.c.chat.job-preview` 获取岗位概览
 
-扩展会从当前页面 Cookie / 缓存读取 `imId_0`，仅拉取当天 `latestMsgTime` 的记录，并将 `jobTitle` 与 `jobSalary` 合并显示在“岗位”列中。岗位详情请求按约每秒 3 次以内执行，避免过于频繁。
+扩展会从当前页面 Cookie / 缓存读取 `imId_0`，仅拉取当天 `latestMsgTime` 的记录，并将 `jobTitle` 与 `jobSalary` 合并显示在“岗位”列中。详情请求会按同步页设置的“每 时/分/秒 同步 N 条”均匀执行，避免过于频繁。
 
 ## 导出字段
 
