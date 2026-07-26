@@ -9,6 +9,12 @@
     readIgnoredRecords,
     appendRequestLog
   } = globalThis.JobChatContentCommon;
+  let bossSendPreparationActive = false;
+
+  function reportBossSendLog(message) {
+    if (!bossSendPreparationActive) return;
+    try { chrome.runtime.sendMessage({ type: 'BOSS_SEND_LOG', message: String(message || '') }); } catch (_) {}
+  }
 
   function parseBossFriendItem(item, index) {
     const time = normalizeText(item.querySelector('.time')?.textContent);
@@ -50,7 +56,7 @@
   }
 
   function bossIdOfItem(item) {
-    return item?.encryptBossId || item?.encryptUid || '';
+    return item?.encryptBossId || item?.encryptUid || item?.encryptFriendId || '';
   }
 
   function bossRecordKeyParts(bossId, jobId) {
@@ -65,7 +71,7 @@
   }
 
   function bossRecordRecordKey(record) {
-    return bossRecordKeyParts(record?.boss?.encryptBossId || record?.boss?.bossId, record?.boss?.jobId);
+    return bossRecordKeyParts(record?.boss?.peerKey || record?.boss?.encryptBossId || record?.boss?.bossId, record?.boss?.jobId);
   }
 
   function bossFriendKey(item) {
@@ -88,7 +94,7 @@
     const primaryKey = bossRecordRecordKey(record);
     const securityId = record?.boss?.securityId;
     const friendId = record?.boss?.encryptFriendId || record?.boss?.friendId;
-    [primaryKey, securityId, friendId].forEach((key) => addBossKeyVariants(keys, key));
+    [primaryKey, securityId, friendId, record?.recordKey].forEach((key) => addBossKeyVariants(keys, key));
     if (!primaryKey && !securityId && !friendId) addBossKeyVariants(keys, record?.recordKey);
     if (primaryKey || securityId || friendId) return;
     [
@@ -113,8 +119,7 @@
     const primaryKey = bossItemRecordKey(item);
     const securityId = item?.securityId;
     const friendId = item?.encryptFriendId || item?.friendId;
-    [primaryKey, securityId, friendId].forEach((key) => addBossKeyVariants(keys, key));
-    if (primaryKey || securityId || friendId) return [...keys];
+    [primaryKey, securityId, friendId, bossIdOfItem(item)].forEach((key) => addBossKeyVariants(keys, key));
     [
       item?.encryptBossId,
       item?.encryptUid,
@@ -201,6 +206,7 @@
   async function fetchBossLabelFriendList() {
     const url = new URL('https://www.zhipin.com/wapi/zprelation/friend/geekFilterByLabel');
     url.searchParams.set('labelId', '0');
+    reportBossSendLog('发送预检 HTTP 请求：GET /wapi/zprelation/friend/geekFilterByLabel?labelId=0');
     await appendRequestLog({ siteKey: 'boss', step: 'geekFilterByLabel:start', method: 'GET', url: url.toString() });
     const response = await fetch(url.toString(), {
       method: 'GET',
@@ -211,6 +217,7 @@
     if (!response.ok) throw new Error(`BOSS直聘列表接口请求失败：HTTP ${response.status}`);
     const data = await response.json();
     const list = parseBossFriendListResult(data);
+    reportBossSendLog(`发送预检 HTTP 响应：GET /wapi/zprelation/friend/geekFilterByLabel；HTTP ${response.status}；code=${data?.code}；联系人=${list.length} 条`);
     await appendRequestLog({ siteKey: 'boss', step: 'geekFilterByLabel:result', code: data?.code, message: data?.message || '', listCount: Array.isArray(list) ? list.length : 0, sampleKeys: Array.isArray(list) && list[0] ? Object.keys(list[0]).slice(0, 12) : [] });
     if (data?.code !== 0) throw new Error(`BOSS直聘列表接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
     return list;
@@ -261,6 +268,7 @@
   async function fetchBossFriendDetailListWithRequest(request) {
     const method = normalizeText(request?.method || 'POST').toUpperCase() || 'POST';
     const body = normalizeText(request?.body || '');
+    reportBossSendLog(`发送预检 HTTP 请求：${method} /wapi/zprelation/friend/getGeekFriendList.json；friendId=${request?.friendIdCount || 0} 个（值已隐藏）`);
     await appendRequestLog({ siteKey: 'boss', step: 'getGeekFriendList:start', method, batchIndex: request?.batchIndex, batchTotal: request?.batchTotal, friendIdCount: request?.friendIdCount, bodyLength: body.length, bodyPreview: body.slice(0, 180) });
     const init = {
       method,
@@ -273,6 +281,7 @@
     if (!response.ok) throw new Error(`BOSS直聘岗位列表接口请求失败：HTTP ${response.status}`);
     const data = await response.json();
     const list = parseBossFriendListResult(data);
+    reportBossSendLog(`发送预检 HTTP 响应：${method} /wapi/zprelation/friend/getGeekFriendList.json；HTTP ${response.status}；code=${data?.code}；记录=${list.length} 条`);
     await appendRequestLog({ siteKey: 'boss', step: 'getGeekFriendList:result', method, batchIndex: request?.batchIndex, batchTotal: request?.batchTotal, friendIdCount: request?.friendIdCount, code: data?.code, message: data?.message || '', listCount: Array.isArray(list) ? list.length : 0, sample: Array.isArray(list) && list[0] ? { name: list[0].name || '', jobId: list[0].jobId || '', friendId: list[0].friendId || '', securityId: list[0].securityId || '', msgId: list[0].lastMessageInfo?.msgId || '' } : null });
     if (data?.code !== 0) throw new Error(`BOSS直聘岗位列表接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
     return list;
@@ -326,7 +335,7 @@
     throw lastError || new Error('BOSS直聘岗位列表接口请求失败。');
   }
 
-  async function fetchBossFriendList() {
+  async function fetchBossFriendList(recentOnly = true) {
     const labelList = await fetchBossLabelFriendList();
     const friendIds = bossFriendIdsFromLabelList(labelList);
     await appendRequestLog({ siteKey: 'boss', step: 'friendIds:parsed', labelCount: Array.isArray(labelList) ? labelList.length : 0, friendIdCount: friendIds.length, firstFriendIds: friendIds.slice(0, 10) });
@@ -340,17 +349,18 @@
     const mergedList = mergeBossFriendDetailList(labelList, detailList);
     const recentList = filterBossRecentList(mergedList);
     await appendRequestLog({ siteKey: 'boss', step: 'bossList:filtered', detailCount: Array.isArray(detailList) ? detailList.length : 0, mergedCount: mergedList.length, recentCount: recentList.length });
-    return recentList;
+    return recentOnly ? recentList : mergedList;
   }
 
   async function fetchBossData(item) {
-    const bossId = item.encryptBossId || item.encryptUid || '';
+    const bossId = item.encryptBossId || item.encryptUid || item.encryptFriendId || '';
     const securityId = item.securityId || '';
     if (!bossId || !securityId) return null;
     const url = new URL('https://www.zhipin.com/wapi/zpchat/geek/getBossData');
     url.searchParams.set('bossId', bossId);
-    url.searchParams.set('bossSource', String(item.sourceType ?? 0));
+    url.searchParams.set('bossSource', String(item.friendSource ?? item.sourceType ?? 0));
     url.searchParams.set('securityId', securityId);
+    reportBossSendLog('发送预检 HTTP 请求：GET /wapi/zpchat/geek/getBossData；bossId=[已隐藏]；securityId=[已隐藏]');
     const response = await fetch(url.toString(), {
       method: 'GET',
       credentials: 'include',
@@ -358,8 +368,20 @@
     });
     if (!response.ok) throw new Error(`BOSS直聘岗位详情接口请求失败：HTTP ${response.status}`);
     const data = await response.json();
+    reportBossSendLog(`发送预检 HTTP 响应：GET /wapi/zpchat/geek/getBossData；HTTP ${response.status}；code=${data?.code}`);
     if (data?.code !== 0) throw new Error(`BOSS直聘岗位详情接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
     return data?.zpData || {};
+  }
+
+  async function fetchBossOwnerUserId() {
+    reportBossSendLog('发送预检 HTTP 请求：GET /wapi/zpuser/wap/getUserInfo.json');
+    const response = await fetch('https://www.zhipin.com/wapi/zpuser/wap/getUserInfo.json', {
+      credentials: 'include', headers: bossHeaders()
+    });
+    if (!response.ok) return '';
+    const data = await response.json();
+    reportBossSendLog(`发送预检 HTTP 响应：GET /wapi/zpuser/wap/getUserInfo.json；HTTP ${response.status}；code=${data?.code}`);
+    return data?.code === 0 ? normalizeText(data?.zpData?.userId) : '';
   }
 
   function bossJobText(jobName, salaryDesc) {
@@ -369,7 +391,7 @@
     return title || '';
   }
 
-  function bossListItemToRecord(item, detail, index, existingRecord) {
+  function bossListItemToRecord(item, detail, index, existingRecord, ownerUserId = '') {
     const data = detail?.data || {};
     const job = detail?.job || {};
     const lastMessage = htmlDecode(item.lastMessageInfo?.showText || item.lastMsg || '');
@@ -390,12 +412,15 @@
       messageStatus: bossMessageStatusFromItem(item),
       boss: {
         ...(existingRecord?.boss || {}),
-        friendId: item.friendId || existingRecord?.boss?.friendId || '',
+        ownerUserId: ownerUserId || existingRecord?.boss?.ownerUserId || '',
+        friendId: data.bossId || item.uid || item.friendId || existingRecord?.boss?.friendId || '',
         friendSource: item.friendSource ?? existingRecord?.boss?.friendSource ?? '',
         encryptFriendId: item.encryptFriendId || existingRecord?.boss?.encryptFriendId || '',
         bossId: data.bossId || item.uid || existingRecord?.boss?.bossId || '',
         encryptBossId: data.encryptBossId || item.encryptBossId || item.encryptUid || existingRecord?.boss?.encryptBossId || '',
-        securityId: data.securityId || item.securityId || existingRecord?.boss?.securityId || '',
+        peerKey: data.encryptBossId || item.encryptBossId || item.encryptUid || item.encryptFriendId || existingRecord?.boss?.peerKey || '',
+        chatSecurityId: item.securityId || existingRecord?.boss?.chatSecurityId || existingRecord?.boss?.securityId || '',
+        uploadSecurityId: data.securityId || existingRecord?.boss?.uploadSecurityId || '',
         jobId: item.jobId || existingRecord?.boss?.jobId || '',
         encryptJobId: data.encryptJobId || item.encryptJobId || existingRecord?.boss?.encryptJobId || '',
         lastMsgId: item.lastMessageInfo?.msgId || '',
@@ -412,6 +437,7 @@
 
   async function extractBossChatRecords() {
     const list = await fetchBossFriendList();
+    const ownerUserId = await fetchBossOwnerUserId();
     if (!Array.isArray(list) || !list.length) {
       const domData = extractBossDomChatRecords();
       if (domData.records.length) {
@@ -471,7 +497,7 @@
       const existingIndex = records.findIndex((record) => bossRecordMatchesItem(record, item));
       let detail = null;
       try { detail = await fetchBossData(item); } catch (_) { detail = null; }
-      const nextRecord = bossListItemToRecord(item, detail, existingIndex >= 0 ? existingIndex : records.length, existingRecord);
+      const nextRecord = bossListItemToRecord(item, detail, existingIndex >= 0 ? existingIndex : records.length, existingRecord, ownerUserId);
       if (existingIndex >= 0) {
         records[existingIndex] = nextRecord;
       } else {
@@ -527,8 +553,122 @@
     };
   }
 
+  function validBossSendTarget(target) {
+    const boss = target?.boss || {};
+    return /^\d+$/.test(normalizeText(boss.friendId))
+      && /^[A-Za-z0-9_~-]{28}$/.test(normalizeText(boss.peerKey || boss.encryptBossId));
+  }
+
+  function targetPeerKey(target) {
+    const stored = normalizeText(target?.boss?.peerKey || target?.boss?.encryptBossId || target?.boss?.encryptFriendId);
+    if (stored) return stored;
+    const parts = normalizeText(target?.recordKey).split('|');
+    return parts[0] === 'boss' ? normalizeText(parts[1]) : '';
+  }
+
+  async function prepareBossSendTargets(targets, ownerUserId = '') {
+    bossSendPreparationActive = true;
+    const sourceTargets = Array.isArray(targets) ? targets : [];
+    const missingTargets = sourceTargets.filter((target) => !validBossSendTarget(target));
+    reportBossSendLog(`发送目标检查：共 ${sourceTargets.length} 条，已有稳定标识 ${sourceTargets.length - missingTargets.length} 条，需要刷新 ${missingTargets.length} 条。`);
+    try {
+      if (!missingTargets.length) {
+        reportBossSendLog('所有目标已有有效 friendId 和 peerKey，跳过联系人列表及 getBossData 请求。');
+        return sourceTargets.map((target) => ({
+          ...target,
+          boss: { ...(target?.boss || {}), ownerUserId: ownerUserId || target?.boss?.ownerUserId || '' }
+        }));
+      }
+
+      let labelList;
+      try {
+        labelList = await fetchBossLabelFriendList();
+      } catch (error) {
+        const errorMessage = error?.message || String(error);
+        reportBossSendLog(`自动补全联系人标识失败：${errorMessage}`);
+        return sourceTargets.map((target) => (
+          validBossSendTarget(target)
+            ? {
+                ...target,
+                boss: { ...(target?.boss || {}), ownerUserId: ownerUserId || target?.boss?.ownerUserId || '' }
+              }
+            : { ...target, prepareError: `自动补全联系人标识失败：${errorMessage}` }
+        ));
+      }
+      const selectedLabels = [];
+      missingTargets.forEach((target) => {
+        const peerKey = targetPeerKey(target);
+        const storedFriendId = normalizeText(target?.boss?.friendId);
+        const label = labelList.find((item) => (
+          (peerKey && normalizeText(bossIdOfItem(item)) === peerKey)
+          || (storedFriendId && normalizeText(item?.friendId) === storedFriendId)
+        ));
+        if (!label) return;
+        if (!selectedLabels.some((item) => normalizeText(item?.friendId) === normalizeText(label?.friendId))) selectedLabels.push(label);
+      });
+      const selectedFriendIds = bossFriendIdsFromLabelList(selectedLabels);
+      reportBossSendLog(`仅刷新选中目标：匹配到 ${selectedLabels.length} 个联系人，请求 ${selectedFriendIds.length} 个 friendId（值已隐藏）。`);
+      let detailList = [];
+      if (selectedFriendIds.length) {
+        try {
+          detailList = await fetchBossFriendDetailList(selectedFriendIds);
+        } catch (error) {
+          reportBossSendLog(`联系人详情补全失败，继续使用联系人列表字段：${error?.message || String(error)}`);
+        }
+      }
+      const list = mergeBossFriendDetailList(selectedLabels, detailList);
+
+      return Promise.all(sourceTargets.map(async (target) => {
+        if (validBossSendTarget(target)) {
+          return {
+            ...target,
+            boss: { ...(target?.boss || {}), ownerUserId: ownerUserId || target?.boss?.ownerUserId || '' }
+          };
+        }
+        const record = { recordKey: target?.recordKey || '', boss: target?.boss || {}, siteKey: 'boss', sourceName: 'BOSS直聘' };
+        const item = list.find((candidate) => bossRecordMatchesItem(record, candidate));
+        if (!item) {
+          reportBossSendLog(`目标精确匹配失败：${record.recordKey}`);
+          return { ...target, prepareError: '目标无法在当前账号联系人列表中精确匹配。' };
+        }
+        let detail = null;
+        try { detail = await fetchBossData(item); } catch (error) {
+          reportBossSendLog(`首次补齐目标时 getBossData 失败：${record.recordKey}；${error?.message || String(error)}`);
+        }
+        const data = detail?.data || {};
+        const friendId = data.bossId || item.uid || item.bossId || item.friendId || target?.boss?.bossId || target?.boss?.friendId || '';
+        const peerKey = data.encryptBossId || item.encryptBossId || item.encryptUid || item.encryptFriendId || targetPeerKey(target);
+        const chatSecurityId = item.securityId || '';
+        const friendIdValid = /^\d+$/.test(normalizeText(friendId));
+        const peerKeyValid = /^[A-Za-z0-9_~-]{28}$/.test(normalizeText(peerKey));
+        reportBossSendLog(`目标字段校验：${record.recordKey}；friendId有效=${friendIdValid}；friendId长度=${normalizeText(friendId).length}；peerKey有效=${peerKeyValid}；peerKey长度=${normalizeText(peerKey).length}；chatSecurityId存在=${Boolean(chatSecurityId)}`);
+        reportBossSendLog(`目标精确匹配成功：${record.recordKey}`);
+        return {
+          ...target,
+          boss: {
+            ...(target?.boss || {}),
+            ownerUserId,
+            friendId,
+            peerKey,
+            chatSecurityId,
+            uploadSecurityId: data.securityId || target?.boss?.uploadSecurityId || '',
+            friendSource: item.friendSource ?? item.sourceType ?? '',
+            bossId: data.bossId || item.uid || item.bossId || target?.boss?.bossId || '',
+            encryptBossId: data.encryptBossId || item.encryptBossId || item.encryptUid || peerKey,
+            jobId: item.jobId || target?.boss?.jobId || '',
+            encryptJobId: data.encryptJobId || item.encryptJobId || target?.boss?.encryptJobId || ''
+          }
+        };
+      }));
+    } finally {
+      reportBossSendLog('发送目标刷新完成。');
+      bossSendPreparationActive = false;
+    }
+  }
+
   globalThis.JobChatBossExtractor = {
     extract: extractBossChatRecords,
-    prepare: prepareBossSync
+    prepare: prepareBossSync,
+    prepareSendTargets: prepareBossSendTargets
   };
 })();

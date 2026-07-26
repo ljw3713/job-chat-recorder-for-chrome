@@ -37,8 +37,23 @@ const requestLogsBtn = document.getElementById('requestLogsBtn');
 const requestLogsModal = document.getElementById('requestLogsModal');
 const requestLogsBox = document.getElementById('requestLogsBox');
 const closeRequestLogsModalBtn = document.getElementById('closeRequestLogsModalBtn');
+const sendMessageBtn = document.getElementById('sendMessageBtn');
+const sendMessageModal = document.getElementById('sendMessageModal');
+const closeSendMessageModalBtn = document.getElementById('closeSendMessageModalBtn');
+const sendMessageTitle = document.getElementById('sendMessageTitle');
+const sendMessageText = document.getElementById('sendMessageText');
+const sendMessageCount = document.getElementById('sendMessageCount');
+const sendMessageRate = document.getElementById('sendMessageRate');
+const startSendMessageBtn = document.getElementById('startSendMessageBtn');
+const sendMessageSummary = document.getElementById('sendMessageSummary');
+const sendMessageTargets = document.getElementById('sendMessageTargets');
+const sendMessageLog = document.getElementById('sendMessageLog');
+const queryInput = document.getElementById('queryInput');
 
-const mode = new URLSearchParams(location.search).get('mode') === 'sync' ? 'sync' : 'overview';
+const pageParams = new URLSearchParams(location.search);
+const mode = pageParams.get('mode') === 'sync' ? 'sync' : 'overview';
+const sendLogEnabled = pageParams.get('log') === 'enable';
+if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey } = globalThis.JobChatRecords;
 const ResultsDb = globalThis.JobChatResultsDb;
@@ -49,6 +64,11 @@ let allRecords = [];
 let currentRecords = [];
 let ignoredRecords = [];
 let selectedKeys = new Set();
+let queryValue = '';
+let queryTimer = null;
+let sendRunning = false;
+let sendStatuses = new Map();
+let sendLogs = [];
 
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者', '状态', '原消息'];
 const exportHeaders = ['唯一索引id', ...tableHeaders];
@@ -105,6 +125,18 @@ function normalizeRecord(record, index) {
     applicationDate,
     updatedDate: normalizeText(record.updatedDate || updatedDate)
   };
+  if (normalized.siteKey === 'boss' || normalized.sourceName === 'BOSS直聘') {
+    const boss = normalized.boss || {};
+    normalized.boss = {
+      ...boss,
+      ownerUserId: normalizeText(boss.ownerUserId || ''),
+      friendId: normalizeText(boss.friendId || ''),
+      peerKey: normalizeText(boss.peerKey || boss.encryptBossId || boss.encryptFriendId || ''),
+      chatSecurityId: normalizeText(boss.chatSecurityId || boss.securityId || ''),
+      uploadSecurityId: normalizeText(boss.uploadSecurityId || ''),
+      friendSource: boss.friendSource ?? ''
+    };
+  }
   normalized.recordKey = makeRecordKey(normalized);
   return normalized;
 }
@@ -139,7 +171,10 @@ function configurePageMode() {
     if (importCsvBtn) importCsvBtn.style.display = '';
     overviewBtn.textContent = '刷新总览';
     pageHint.textContent = '记录总览页：显示所有已保存记录，可筛选、排序、批量删除、导出当前页面结果。岗位和备注列可双击编辑。';
+    if (sendMessageBtn) sendMessageBtn.style.display = '';
   }
+  if (mode === 'sync' && sendMessageBtn) sendMessageBtn.style.display = 'none';
+  if (queryInput) queryInput.style.display = mode === 'overview' ? '' : 'none';
 }
 
 function formatRequestLog(entry, index) {
@@ -271,7 +306,12 @@ function applyFilters() {
   const company = companyFilter.value;
   if (company) records = records.filter((r) => r.companyName === company);
   const messageStatus = messageStatusFilter?.value || '';
-  if (messageStatus) records = records.filter((r) => normalizeMessageStatus(r.messageStatus) === messageStatus);
+  if (messageStatus) records = records.filter((r) => (normalizeMessageStatus(r.messageStatus) || '0') === messageStatus);
+  const words = queryValue.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length) records = records.filter((record) => {
+    const searchable = [record.companyName, record.jobName, record.recruiterName, record.recruiterTitle, record.lastMessage].join(' ').toLocaleLowerCase();
+    return words.every((word) => searchable.includes(word));
+  });
   const dateField = dateFieldFilter.value || 'updatedDate';
   const from = dateFrom.value;
   const to = dateTo.value;
@@ -560,6 +600,43 @@ function updateDeleteButton() {
     ignoredRecordsBtn.style.display = mode === 'overview' ? '' : 'none';
     ignoredRecordsBtn.textContent = ignoredRecords.length ? `忽略记录（${ignoredRecords.length}）` : '忽略记录';
   }
+  if (sendMessageBtn) {
+    sendMessageBtn.textContent = selectedKeys.size ? `发送信息（${selectedKeys.size}）` : '发送信息';
+    sendMessageBtn.disabled = selectedKeys.size === 0 || sendRunning;
+  }
+}
+
+function selectedRecords() { return allRecords.filter((record) => selectedKeys.has(record.recordKey)); }
+function isSendable(record) {
+  if (record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘') return '非 BOSS 记录';
+  return '';
+}
+function sendStatusText(progress) {
+  const status = progress?.status || '';
+  if (status === '成功' || status === '已发送') return '成功';
+  if (status === '失败' || status === '结果未知') return '失败';
+  return '等待';
+}
+function renderSendModal() {
+  const records = selectedRecords(); const blocked = records.filter(isSendable); const sendable = records.length - blocked.length;
+  sendMessageTitle.textContent = `已选 ${records.length} 条 · 可发送 ${sendable} 条 · 不可发送 ${blocked.length} 条`;
+  sendMessageSummary.textContent = sendRunning ? '发送任务仍在运行；关闭窗口不会取消发送。' : '仅向当前已登录 BOSS 账号下的已有联系人发送纯文本消息。';
+  sendMessageTargets.innerHTML = `<table><thead><tr><th>公司</th><th>岗位</th><th>招聘者</th><th>更新时间</th><th>发送状态</th><th>备注</th></tr></thead><tbody>${records.map((record) => {
+    const reason = isSendable(record);
+    const progress = sendStatuses.get(record.recordKey);
+    const note = progress?.errorMessage || reason || '';
+    return `<tr><td>${escapeHtml(record.companyName)}</td><td>${escapeHtml(record.jobName)}</td><td>${escapeHtml(recruiterInfo(record))}</td><td>${escapeHtml(displayDate(record.updatedDate))}</td><td>${escapeHtml(sendStatusText(progress))}</td><td>${escapeHtml(note)}</td></tr>`;
+  }).join('')}</tbody></table>`;
+  renderSendLog();
+}
+function renderSendLog() {
+  if (!sendMessageLog || !sendLogEnabled) return;
+  sendMessageLog.textContent = sendLogs.length ? sendLogs.map((entry) => `[${String(entry.time || '').slice(11, 19)}] ${entry.message || ''}`).join('\n') : '尚未开始发送。';
+  sendMessageLog.scrollTop = sendMessageLog.scrollHeight;
+}
+function setSendControls(disabled) {
+  [sendMessageText, sendMessageRate].forEach((element) => { if (element) element.disabled = disabled; });
+  if (startSendMessageBtn) { startSendMessageBtn.disabled = false; startSendMessageBtn.textContent = disabled ? '停止' : '发送'; }
 }
 
 function renderTable() {
@@ -683,12 +760,43 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.jobChatExtractionStatus || changes.bossChatStatsLatest || changes.jobChatRecords || changes.jobChatPendingRecords || changes.jobChatIgnoredRecords) {
     loadAndRenderLatest();
   }
+  if (changes.jobChatBossSendProgress) {
+    const progress = changes.jobChatBossSendProgress.newValue || {};
+    if (progress.recordKey) sendStatuses.set(progress.recordKey, progress);
+    if (progress.type === 'BOSS_SEND_ERROR') {
+      selectedRecords().forEach((record) => {
+        const current = sendStatuses.get(record.recordKey);
+        if (sendStatusText(current) === '等待') {
+          sendStatuses.set(record.recordKey, {
+            recordKey: record.recordKey,
+            status: '失败',
+            errorCode: 'BATCH_FAILED',
+            errorMessage: progress.errorMessage || '发送任务失败。'
+          });
+        }
+      });
+    }
+    if (progress.type === 'BOSS_SEND_FINISHED' || progress.type === 'BOSS_SEND_ERROR' || progress.type === 'BOSS_SEND_STOPPED') { sendRunning = false; setSendControls(false); }
+    if (sendMessageModal?.classList.contains('show')) renderSendModal();
+    updateDeleteButton();
+  }
+  if (changes.jobChatBossSendLogs) {
+    if (sendLogEnabled) {
+      sendLogs = Array.isArray(changes.jobChatBossSendLogs.newValue) ? changes.jobChatBossSendLogs.newValue : [];
+      if (sendMessageModal?.classList.contains('show')) renderSendLog();
+    }
+  }
 });
 
 [todayOnly, sourceFilter, companyFilter, messageStatusFilter, dateFieldFilter, dateFrom, dateTo, sortBy].forEach((el) => el?.addEventListener('change', () => {
   selectedKeys.clear();
   renderTable();
 }));
+
+if (queryInput) queryInput.addEventListener('input', () => {
+  clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => { queryValue = normalizeText(queryInput.value); selectedKeys.clear(); renderTable(); }, 1000);
+});
 
 saveBtn.addEventListener('click', async () => {
   await persistCurrentRecords();
@@ -754,6 +862,69 @@ if (requestLogsModal) {
     if (event.target === requestLogsModal) requestLogsModal.classList.remove('show');
   });
 }
+
+if (sendMessageBtn) sendMessageBtn.addEventListener('click', async () => {
+  sendStatuses = new Map();
+  sendMessageText.value = '';
+  sendMessageCount.textContent = '0 / 1000';
+  sendMessageRate.value = String(await ResultsDb.loadBossSendRate());
+  if (sendLogEnabled) {
+    const store = await chrome.storage.local.get(['jobChatBossSendLogs']);
+    sendLogs = Array.isArray(store.jobChatBossSendLogs) ? store.jobChatBossSendLogs : [];
+  } else {
+    sendLogs = [];
+  }
+  renderSendModal();
+  sendMessageModal.classList.add('show');
+});
+if (sendMessageText) sendMessageText.addEventListener('input', () => { sendMessageCount.textContent = `${sendMessageText.value.length} / 1000`; });
+if (sendMessageRate) sendMessageRate.addEventListener('change', async () => {
+  const inputRate = Number(sendMessageRate.value);
+  const rate = Number.isFinite(inputRate) ? Math.max(1, Math.floor(inputRate)) : 10;
+  sendMessageRate.value = String(rate); await ResultsDb.saveBossSendRate(rate);
+});
+if (startSendMessageBtn) startSendMessageBtn.addEventListener('click', async () => {
+  if (sendRunning) {
+    startSendMessageBtn.disabled = true;
+    const response = await chrome.runtime.sendMessage({ type: 'BOSS_STOP_BATCH' });
+    if (!response?.ok) alert(response?.error || '无法停止发送任务。');
+    startSendMessageBtn.disabled = false;
+    return;
+  }
+  const message = normalizeText(sendMessageText.value);
+  const records = selectedRecords();
+  if (!message) { alert('请输入要发送的消息。'); return; }
+  if (!records.length) { alert('没有选中记录。'); return; }
+  if (records.some((record) => record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘')) { alert('选中记录包含猎聘，不能发送整个批次。'); return; }
+  const inputRate = Number(sendMessageRate.value);
+  const rate = Number.isFinite(inputRate) ? Math.max(1, Math.floor(inputRate)) : 10;
+  await ResultsDb.saveBossSendRate(rate);
+  sendRunning = true; sendLogs = []; await chrome.storage.local.set({ jobChatBossSendLogs: [] }); setSendControls(true); renderSendModal();
+  const response = await chrome.runtime.sendMessage({ type: 'BOSS_SEND_BATCH', recordKeys: records.map((record) => record.recordKey), message, rate });
+  if (!response?.ok) {
+    const errorMessage = response?.error || '无法启动发送任务。';
+    records.forEach((record) => {
+      if (sendStatusText(sendStatuses.get(record.recordKey)) === '等待') {
+        sendStatuses.set(record.recordKey, {
+          recordKey: record.recordKey,
+          status: '失败',
+          errorCode: 'BATCH_START_FAILED',
+          errorMessage
+        });
+      }
+    });
+    sendRunning = false;
+    setSendControls(false);
+    renderSendModal();
+    alert(errorMessage);
+  }
+});
+function closeSendModal() {
+  if (sendRunning && !confirm('发送任务仍在运行。关闭弹窗不会取消发送，是否关闭？')) return;
+  sendMessageModal.classList.remove('show');
+}
+if (closeSendMessageModalBtn) closeSendMessageModalBtn.addEventListener('click', closeSendModal);
+if (sendMessageModal) sendMessageModal.addEventListener('click', (event) => { if (event.target === sendMessageModal) closeSendModal(); });
 
 
 

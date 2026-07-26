@@ -44,7 +44,7 @@
     const bossJobId = normalizeText(record?.boss?.jobId || '');
     if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId && bossJobId) return `boss|${bossId.toLowerCase()}|${bossJobId.toLowerCase()}`;
     if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossId) return `boss|${bossId.toLowerCase()}`;
-    const bossSecurityId = normalizeText(record?.boss?.securityId || '');
+    const bossSecurityId = normalizeText(record?.boss?.chatSecurityId || record?.boss?.securityId || '');
     if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossSecurityId) return `boss|${bossSecurityId.toLowerCase()}`;
     const bossFriendId = normalizeText(record?.boss?.encryptFriendId || record?.boss?.friendId || '');
     if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossFriendId) return `boss|${bossFriendId.toLowerCase()}`;
@@ -73,6 +73,25 @@
       lastMessage: normalizeText(record?.lastMessage),
       messageStatus: normalizeText(record?.messageStatus || '')
     };
+    if (normalized.siteKey === 'boss' || normalized.sourceName === 'BOSS直聘') {
+      const oldBoss = normalized.boss || {};
+      normalized.boss = {
+        ...oldBoss,
+        ownerUserId: normalizeText(oldBoss.ownerUserId || ''),
+        friendId: normalizeText(oldBoss.friendId || ''),
+        peerKey: normalizeText(oldBoss.peerKey || oldBoss.encryptBossId || oldBoss.encryptFriendId || ''),
+        chatSecurityId: normalizeText(oldBoss.chatSecurityId || oldBoss.securityId || ''),
+        uploadSecurityId: normalizeText(oldBoss.uploadSecurityId || ''),
+        friendSource: oldBoss.friendSource ?? '',
+        bossId: normalizeText(oldBoss.bossId || ''),
+        encryptBossId: normalizeText(oldBoss.encryptBossId || oldBoss.peerKey || ''),
+        jobId: normalizeText(oldBoss.jobId || ''),
+        encryptJobId: normalizeText(oldBoss.encryptJobId || ''),
+        lastMsgId: normalizeText(oldBoss.lastMsgId || oldBoss.lastMessageInfo?.msgId || '')
+      };
+      // Keep legacy securityId only for record-key compatibility. Sending never reads it.
+      delete normalized.boss.securityId;
+    }
     normalized.recordKey = makeRecordKey(normalized);
     return normalized;
   }

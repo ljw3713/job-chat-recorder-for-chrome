@@ -115,6 +115,16 @@
     await chrome.storage.local.set({ jobChatSyncRateSettings: normalizeSyncRateSettings(settings) });
   }
 
+  function normalizeBossSendRate(value) {
+    const rate = Number(value);
+    return Number.isFinite(rate) ? Math.max(1, Math.floor(rate)) : 10;
+  }
+  async function loadBossSendRate() {
+    const store = await chrome.storage.local.get(['jobChatBossSendRate']);
+    return normalizeBossSendRate(store.jobChatBossSendRate);
+  }
+  async function saveBossSendRate(value) { await chrome.storage.local.set({ jobChatBossSendRate: normalizeBossSendRate(value) }); }
+
   globalThis.JobChatResultsDb = {
     tsv,
     csv,
@@ -126,6 +136,8 @@
     loadTotalRecords,
     saveMultiple,
     loadSyncRateSettings,
-    saveSyncRateSettings
+    saveSyncRateSettings,
+    loadBossSendRate,
+    saveBossSendRate
   };
 })();

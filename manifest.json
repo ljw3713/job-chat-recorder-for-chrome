@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "直聘|猎聘 沟通记录统计器",
-  "version": "1.39.0",
+  "name": "直聘|猎聘 沟通助手",
+  "version": "2.0.0",
   "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
   "permissions": [
     "activeTab",
@@ -15,7 +15,7 @@
     "https://api-c.liepin.com/*"
   ],
   "action": {
-    "default_title": "统计招聘沟通记录",
+    "default_title": "直聘|猎聘 沟通助手",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "assets/icons/icon-16.png",
@@ -25,6 +25,17 @@
     }
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://*.zhipin.com/*"
+      ],
+      "js": [
+        "boss-message-protocol.js",
+        "boss-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "https://*.liepin.com/*",
@@ -53,7 +64,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "boss-hook.js"
+        "boss-hook.js",
+        "boss-message-protocol.js"
       ],
       "matches": [
         "https://*.zhipin.com/*"

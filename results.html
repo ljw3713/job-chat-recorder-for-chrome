@@ -59,6 +59,13 @@
     .modal-header h2 { margin: 0; font-size: 16px; }
     .modal-body { padding: 16px 18px; }
     .modal table { margin-bottom: 0; }
+    .send-form { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; margin-bottom: 14px; }
+    .send-form textarea { grid-column: 1 / -1; min-height: 100px; box-sizing: border-box; resize: vertical; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
+    .send-form label { color: #374151; font-size: 13px; }
+    .send-form input { width: 64px; margin-left: 6px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+    .send-targets { max-height: 420px; overflow-y: auto; }
+    .send-log { margin: 14px 0 0; max-height: 180px; overflow: auto; background: #111827; color: #f9fafb; border-radius: 8px; padding: 10px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+    .send-summary { color: #6b7280; font-size: 13px; margin: 0 0 10px; }
     th.action, td.action-cell { width: 90px; }
     .floating-log-btn { position: fixed; left: 18px; bottom: 18px; z-index: 30; box-shadow: 0 10px 24px rgba(17,24,39,.18); }
     .log-box { background: #111827; color: #f9fafb; border-radius: 8px; padding: 14px; overflow: auto; max-height: 62vh; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
@@ -87,6 +94,7 @@
         </label>
         <button id="downloadJsonBtn" class="secondary">下载 JSON</button>
         <button id="importCsvBtn" class="secondary" style="display:none;">导入 CSV</button>
+        <button id="sendMessageBtn" class="secondary" style="display:none;">发送信息</button>
         <input id="importCsvInput" type="file" accept=".csv,text/csv" style="display:none;" />
         <button id="copyJsonBtn" class="light" style="display:none;">复制 JSON</button>
         <label class="filter-box" id="syncRateBox" style="display:none;">每
@@ -102,6 +110,7 @@
         <button id="startSyncBtn" class="secondary" style="display:none;">同步</button>
         <button id="cancelSyncBtn" class="danger" style="display:none;">中断</button>
         <button id="resumeSyncBtn" class="secondary" style="display:none;">继续</button>
+        <input id="queryInput" type="search" placeholder="查询公司、岗位、招聘者、原消息" style="margin-left:auto;min-width:250px;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;" />
       </div>
       <div class="toolbar-row filters">
         <label class="filter-box">来源
@@ -112,7 +121,7 @@
         </label>
         <label class="filter-box">消息状态
           <select id="messageStatusFilter">
-            <option value="">全部状态</option>
+            <option value="">全部</option>
             <option value="0">未读</option>
             <option value="1">已读</option>
           </select>
@@ -163,6 +172,25 @@
       </div>
       <div class="modal-body">
         <pre id="requestLogsBox" class="log-box">暂无请求日志。</pre>
+      </div>
+    </div>
+  </div>
+  <div id="sendMessageModal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="sendMessageTitle">发送信息</h2>
+        <button id="closeSendMessageModalBtn" class="light">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="send-form">
+          <textarea id="sendMessageText" maxlength="1000" placeholder="请输入要发送的消息（1–1000 个字符）"></textarea>
+          <span id="sendMessageCount" class="hint">0 / 1000</span>
+          <button id="startSendMessageBtn" class="secondary">发送</button>
+          <label>每分钟发送数<input id="sendMessageRate" type="number" min="1" value="10" /></label>
+        </div>
+        <p id="sendMessageSummary" class="send-summary"></p>
+        <div id="sendMessageTargets" class="send-targets"></div>
+        <pre id="sendMessageLog" class="send-log" style="display:none;">尚未开始发送。</pre>
       </div>
     </div>
   </div>
