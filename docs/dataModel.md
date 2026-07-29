@@ -183,10 +183,11 @@ liepin|{liepin.oppositeImId}
 
 | 字段 | 说明 |
 |---|---|
-| `externalId` | 通用的平台岗位 ID；BOSS 来源为 `encryptJobId` 或岗位详情中的 `encryptId` |
-| `detailAccessToken` | 获取岗位详情的临时访问凭据；BOSS 来源为 `getBossData` 返回的 `securityId` |
+| `externalId` | 通用的平台岗位 ID；BOSS 来源为 `encryptJobId`，猎聘来源为 `job-preview.jobId` |
+| `detailAccessToken` | 获取岗位详情的临时访问凭据；BOSS 来源为 `getBossData.securityId`，猎聘不需要该字段 |
 
-`detailAccessToken` 是敏感、可能过期的数据。它会出现在 JSON 输出中，但不会进入 CSV。
+`detailAccessToken` 在需要凭证的平台属于敏感、可能过期的数据。是否必填由站点适配器
+声明；BOSS 必填，猎聘为空。它会出现在 JSON 输出中，但不会进入 CSV。
 
 旧的顶层 `bossJobSecurityId`、`externalJobId`、`jobDetailAccessToken`，以及
 `boss.encryptJobId`、`boss.bossJobSecurityId`、`boss.uploadSecurityId` 不属于当前模型，
@@ -312,7 +313,22 @@ liepin|{liepin.oppositeImId}
   "latestMsgTime": "",
   "oppositeRead": "",
   "contactKey": "",
-  "homePage": ""
+  "homePage": "",
+  "jobId": "",
+  "jobKind": "",
+  "contactType": "hr",
+  "jobDetailUrl": "",
+  "jobPreview": {
+    "jobId": "",
+    "jobKind": "",
+    "jobTitle": "",
+    "jobDqName": "",
+    "reqWorkYear": "",
+    "reqEdu": "",
+    "jobSalary": "",
+    "compStage": "",
+    "jobCompany": ""
+  }
 }
 ```
 
@@ -325,8 +341,15 @@ liepin|{liepin.oppositeImId}
 | `oppositeRead` | 对端读取状态 |
 | `contactKey` | 联系人匹配键 |
 | `homePage` | 联系人主页地址 |
+| `jobId` | `job-preview` 返回的原始岗位 ID；与 `jobRef.externalId` 一致 |
+| `jobKind` | 猎聘岗位类型，用于与联系人类型交叉校验 |
+| `contactType` | 根据主页识别的 `hr`、`hunter` 或 `unknown` |
+| `jobDetailUrl` | HR 或猎头岗位详情地址 |
+| `jobPreview` | 规范化后的岗位预览快照，作为详情字段回退 |
 
-猎聘目前只同步聊天记录，不同步通用 `jobInfo`。
+猎聘同步聊天记录和通用 `jobInfo`。HR 详情 URL 使用
+`/job/19{jobId}.shtml`，猎头详情 URL 使用 `/a/{jobId}.shtml`；`19` 只属于 URL
+路由，不进入 `jobId`。
 
 ## 9. 公司资料 `CompanyProfile`
 

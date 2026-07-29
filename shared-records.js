@@ -146,7 +146,7 @@
         jobId: normalizeText(oldBoss.jobId || ''),
         lastMsgId: normalizeText(oldBoss.lastMsgId || oldBoss.lastMessageInfo?.msgId || '')
       };
-      // Keep legacy securityId only for record-key compatibility. Sending never reads it.
+      // Migrate the legacy securityId into chatSecurityId; persisted refreshes remove the old field.
       delete normalized.boss.securityId;
       delete normalized.boss.bossSecurityId;
       delete normalized.boss.bossJobSecurityId;

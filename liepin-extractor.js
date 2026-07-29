@@ -6,8 +6,11 @@
     reportProgress,
     isCancelRequested,
     savePartial,
-    readIgnoredRecords
+    readIgnoredRecords,
+    readPreparedSourceList,
+    appendRequestLog
   } = globalThis.JobChatContentCommon;
+  const { normalizeJobInfo, isCompleteJobInfo, normalizeMultilineText } = globalThis.JobChatRecords;
 
   async function readExistingLiepinPending() {
     try {
@@ -90,21 +93,27 @@
     return [...keys];
   }
 
-  function liepinSyncMessage(synced, total, insertedCount, updatedMsgCount) {
-    return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，消息状态：新增 ${insertedCount} 条，更新 ${updatedMsgCount} 条`;
+  function createJobDetailSyncStats() {
+    return { requested: 0, success: 0, failed: 0, skipped: 0, riskPauses: 0, stoppedByRiskControl: false };
   }
 
-  function liepinSyncSummary(insertedCount, updatedMsgCount) {
+  function liepinSyncMessage(synced, total, insertedCount, updatedMsgCount, jobDetailStats = {}) {
+    const detailCompleted = Number(jobDetailStats.success || 0) + Number(jobDetailStats.failed || 0) + Number(jobDetailStats.skipped || 0);
+    return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，消息状态：新增 ${insertedCount} 条，更新 ${updatedMsgCount} 条；岗位详情 ${detailCompleted} 条`;
+  }
+
+  function liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats = createJobDetailSyncStats()) {
     return {
       inserted: insertedCount,
       updated: updatedMsgCount,
-      updatedMsg: updatedMsgCount
+      updatedMsg: updatedMsgCount,
+      jobDetail: { ...jobDetailStats }
     };
   }
 
-  async function saveLiepinPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0) {
+  async function saveLiepinPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0, jobDetailStats = createJobDetailSyncStats()) {
     return savePartial('liepin', '猎聘沟通记录', '猎聘', records, synced, total, interrupted, completed, {
-      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount)
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats)
     });
   }
 
@@ -146,16 +155,87 @@
     };
   }
 
+  function liepinApiStep(path) {
+    if (path.endsWith('.contact.get-contact-list')) return 'getContactList';
+    if (path.endsWith('.chat.job-preview')) return 'jobPreview';
+    return path;
+  }
+
+  function responseHeaders(response) {
+    try { return Object.fromEntries(response.headers.entries()); } catch (_) { return {}; }
+  }
+
   async function postLiepinApi(path, params) {
-    const response = await fetch(`https://api-c.liepin.com/api/${path}`, {
-      method: 'POST',
-      credentials: 'include',
-      mode: 'cors',
-      headers: liepinHeaders(),
-      body: new URLSearchParams(params).toString()
+    const url = `https://api-c.liepin.com/api/${path}`;
+    const headers = liepinHeaders();
+    const body = new URLSearchParams(params).toString();
+    const step = liepinApiStep(path);
+    await appendRequestLog({
+      siteKey: 'liepin',
+      step: `${step}:request`,
+      request: {
+        method: 'POST',
+        url,
+        credentials: 'include',
+        mode: 'cors',
+        headers,
+        body,
+        params: { ...params }
+      }
     });
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        mode: 'cors',
+        headers,
+        body
+      });
+    } catch (error) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: `${step}:networkError`,
+        request: { method: 'POST', url, body },
+        error: error?.message || String(error)
+      });
+      throw error;
+    }
+
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (error) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: `${step}:response`,
+        response: {
+          status: response.status,
+          statusText: response.statusText,
+          url: response.url || url,
+          headers: responseHeaders(response),
+          body: responseText,
+          jsonParseError: error?.message || String(error)
+        }
+      });
+      throw new Error(`猎聘接口未返回有效 JSON：HTTP ${response.status}`);
+    }
+
+    await appendRequestLog({
+      siteKey: 'liepin',
+      step: `${step}:response`,
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url || url,
+        headers: responseHeaders(response),
+        body: data
+      }
+    });
+
     if (!response.ok) throw new Error(`猎聘接口请求失败：HTTP ${response.status}`);
-    const data = await response.json();
     if (data?.flag !== 1) throw new Error(`猎聘接口返回异常：${JSON.stringify(data).slice(0, 300)}`);
     return data.data || {};
   }
@@ -184,28 +264,101 @@
     return title || '';
   }
 
+  function classifyLiepinContact(homePage) {
+    try {
+      const pathname = new URL(normalizeText(homePage), 'https://www.liepin.com').pathname;
+      if (/^\/company\/[^/]+\/?$/i.test(pathname)) return 'hr';
+      if (/^\/hunter\/[^/]+\/?$/i.test(pathname)) return 'hunter';
+    } catch (_) {}
+    return 'unknown';
+  }
+
+  function liepinJobDetailUrl(jobId, contactType) {
+    const id = normalizeText(jobId);
+    if (!/^\d+$/.test(id)) throw new Error('猎聘岗位预览未返回有效 jobId。');
+    if (contactType === 'hr') return `https://www.liepin.com/job/19${id}.shtml`;
+    if (contactType === 'hunter') return `https://www.liepin.com/a/${id}.shtml`;
+    throw new Error('无法根据联系人主页判断公司 HR 或猎头。');
+  }
+
+  function previewJobInfo(preview, existingJobInfo = {}, options = {}) {
+    const emptyPreview = Boolean(options.emptyPreview);
+    return normalizeJobInfo({
+      ...existingJobInfo,
+      title: preview?.jobTitle || existingJobInfo?.title || '',
+      location: preview?.jobDqName || existingJobInfo?.location || '',
+      experience: preview?.reqWorkYear || existingJobInfo?.experience || '',
+      education: preview?.reqEdu || existingJobInfo?.education || '',
+      salary: preview?.jobSalary || existingJobInfo?.salary || '',
+      fetchStatus: emptyPreview ? 'success' : (existingJobInfo?.fetchStatus || ''),
+      fetchedAt: emptyPreview ? new Date().toISOString() : (existingJobInfo?.fetchedAt || ''),
+      errorMessage: emptyPreview ? '' : (existingJobInfo?.errorMessage || '')
+    });
+  }
+
+  function isLiepinEmptyJobPreview(record) {
+    return record?.liepin?.jobPreviewStatus === 'empty';
+  }
+
+  function liepinNeedsJobDetail(record) {
+    return !isLiepinEmptyJobPreview(record) && !isCompleteJobInfo(record);
+  }
+
   async function buildLiepinRecord(item, imId, index, existingRecord) {
     const key = liepinContactKey(item);
     const payloadInfo = parseLiepinLastPayload(item.lastPayload);
     let preview = {};
-    try { preview = await fetchLiepinJobPreview(item.imId || imId, item.oppositeImId); } catch (_) { preview = {}; }
+    let previewError = '';
+    let previewSucceeded = false;
+    try {
+      preview = await fetchLiepinJobPreview(item.imId || imId, item.oppositeImId);
+      previewSucceeded = true;
+    } catch (error) {
+      previewError = error?.message || String(error);
+      await appendRequestLog({ siteKey: 'liepin', step: 'jobPreview:error', contactKey: key, error: error?.message || String(error) });
+    }
 
+    const previewJobId = normalizeText(preview.jobId);
+    const emptyPreview = previewSucceeded && !previewJobId;
+    if (emptyPreview) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: 'jobPreview:empty',
+        contactKey: key,
+        oppositeImId: item.oppositeImId || '',
+        message: '岗位预览接口成功，但当前联系人没有关联岗位；跳过岗位详情请求。'
+      });
+    }
     const jobTitle = preview.jobTitle || payloadInfo.jobTitle || '';
     const jobSalary = preview.jobSalary || payloadInfo.jobSalary || '';
-    const companyName = preview.jobCompany || item.company || payloadInfo.jobCompany || '';
-    const lastMessage = payloadInfo.message || normalizeText(item.lastPayload || '');
+    const companyName = preview.jobCompany || item.company || payloadInfo.jobCompany || existingRecord?.companyName || '';
+    const lastMessage = payloadInfo.message || normalizeText(item.lastPayload || '') || existingRecord?.lastMessage || '';
+    const jobId = normalizeText(previewJobId || existingRecord?.liepin?.jobId || existingRecord?.jobRef?.externalId);
+    const jobKind = normalizeText(preview.jobKind || existingRecord?.liepin?.jobKind);
+    const homePage = item.homePage || existingRecord?.liepin?.homePage || '';
+    const contactType = classifyLiepinContact(homePage);
+    let jobDetailUrl = '';
+    try { jobDetailUrl = jobId ? liepinJobDetailUrl(jobId, contactType) : ''; } catch (_) {}
+    const jobChanged = Boolean(jobId && existingRecord?.jobRef?.externalId && jobId !== normalizeText(existingRecord.jobRef.externalId));
+    const existingJobInfo = jobChanged ? {} : (existingRecord?.jobInfo || {});
+    const existingPreview = jobChanged || emptyPreview ? {} : (existingRecord?.liepin?.jobPreview || {});
 
     return {
       ...(existingRecord || {}),
       index,
       time: formatDateTime(new Date(Number(item.latestMsgTime))),
       updatedAt: new Date().toISOString(),
-      recruiterName: normalizeText(item.name),
+      recruiterName: normalizeText(item.name) || existingRecord?.recruiterName || '',
       companyName: normalizeText(companyName),
-      recruiterTitle: normalizeText(item.title),
-      jobName: liepinJobText(jobTitle, jobSalary),
+      recruiterTitle: normalizeText(item.title) || existingRecord?.recruiterTitle || '',
+      jobName: liepinJobText(jobTitle, jobSalary) || existingRecord?.jobName || '',
       lastMessage,
       messageStatus: liepinMessageStatusFromItem(item),
+      jobRef: {
+        externalId: jobId,
+        detailAccessToken: ''
+      },
+      jobInfo: previewJobInfo(preview, existingJobInfo, { emptyPreview }),
       liepin: {
         ...(existingRecord?.liepin || {}),
         imId: item.imId || imId,
@@ -214,7 +367,24 @@
         latestMsgTime: item.latestMsgTime || '',
         oppositeRead: normalizeText(item.oppositeRead || ''),
         contactKey: key,
-        homePage: item.homePage || existingRecord?.liepin?.homePage || ''
+        homePage,
+        jobId,
+        jobKind,
+        contactType,
+        jobDetailUrl,
+        jobPreviewError: previewError,
+        jobPreviewStatus: previewError ? 'failed' : (emptyPreview ? 'empty' : 'available'),
+        jobPreview: {
+          jobId,
+          jobKind,
+          jobTitle: normalizeText(preview.jobTitle || existingPreview.jobTitle || ''),
+          jobDqName: normalizeText(preview.jobDqName || existingPreview.jobDqName || ''),
+          reqWorkYear: normalizeText(preview.reqWorkYear || existingPreview.reqWorkYear || ''),
+          reqEdu: normalizeText(preview.reqEdu || existingPreview.reqEdu || ''),
+          jobSalary: normalizeText(preview.jobSalary || existingPreview.jobSalary || ''),
+          compStage: normalizeText(preview.compStage || existingPreview.compStage || ''),
+          jobCompany: normalizeText(preview.jobCompany || existingPreview.jobCompany || '')
+        }
       }
     };
   }
@@ -240,8 +410,271 @@
     });
   }
 
+  async function resolveLiepinJobAccess(record, context = {}) {
+    const preview = context.preview || record?.liepin?.jobPreview || {};
+    const jobId = normalizeText(preview.jobId || record?.liepin?.jobId || record?.jobRef?.externalId);
+    const jobKind = normalizeText(preview.jobKind || record?.liepin?.jobKind);
+    const homePage = context?.item?.homePage || record?.liepin?.homePage || '';
+    const contactType = classifyLiepinContact(homePage);
+    let detailUrl;
+    try {
+      if (!jobId && record?.liepin?.jobPreviewError) {
+        throw new Error(`猎聘岗位预览请求失败：${record.liepin.jobPreviewError}`);
+      }
+      detailUrl = liepinJobDetailUrl(jobId, contactType);
+    } catch (error) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: 'jobPreview:validationError',
+        contactKey: record?.liepin?.contactKey || liepinContactKey(context?.item),
+        imId: record?.liepin?.imId || context?.item?.imId || '',
+        oppositeImId: record?.liepin?.oppositeImId || context?.item?.oppositeImId || '',
+        jobId,
+        jobKind,
+        homePage,
+        contactType,
+        preview,
+        error: error?.message || String(error)
+      });
+      throw error;
+    }
+    const expectedKind = contactType === 'hr' ? '2' : '1';
+    if (jobKind && jobKind !== expectedKind) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: 'jobDetail:contactTypeConflict',
+        jobId,
+        jobKind,
+        contactType,
+        homePage
+      });
+    }
+    return {
+      jobRef: { externalId: jobId, detailAccessToken: '' },
+      detailUrl,
+      contactType,
+      jobKind,
+      homePage,
+      preview: {
+        ...(record?.liepin?.jobPreview || {}),
+        ...preview
+      },
+      previousJobInfo: normalizeJobInfo(record?.jobInfo)
+    };
+  }
+
+  function liepinPageError(message, code, extra = {}) {
+    const error = new Error(message);
+    error.code = code;
+    Object.assign(error, extra);
+    return error;
+  }
+
+  async function fetchLiepinJobDetail(jobRef, access, options = {}) {
+    const url = access?.detailUrl || liepinJobDetailUrl(jobRef.externalId, access?.contactType);
+    const request = {
+      method: 'GET',
+      url,
+      credentials: 'include',
+      redirect: 'follow',
+      headers: { Accept: 'text/html,application/xhtml+xml' }
+    };
+    await appendRequestLog({ siteKey: 'liepin', step: 'jobDetail:request', request });
+    options.onLog?.({ step: 'jobDetail:request', message: `GET ${url}` });
+    let response;
+    try {
+      response = await fetch(url, { ...request, signal: options.signal });
+    } catch (error) {
+      await appendRequestLog({
+        siteKey: 'liepin',
+        step: 'jobDetail:networkError',
+        request,
+        error: error?.message || String(error)
+      });
+      throw error;
+    }
+    const html = await response.text();
+    await appendRequestLog({
+      siteKey: 'liepin',
+      step: 'jobDetail:response',
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url || url,
+        headers: responseHeaders(response),
+        body: html
+      }
+    });
+    options.onLog?.({ step: 'jobDetail:response', message: `HTTP ${response.status} · ${response.url || url}` });
+    if (!response.ok) {
+      throw liepinPageError(`猎聘岗位详情请求失败：HTTP ${response.status}`, 'detail_http_failed', {
+        status: response.status,
+        riskControl: response.status === 403 || response.status === 429
+      });
+    }
+    const finalPath = (() => { try { return new URL(response.url || url).pathname; } catch (_) { return ''; } })();
+    if (/login|passport|verify|captcha|security/i.test(finalPath)
+      || /登录后查看|安全验证|验证码|访问过于频繁/.test(html.slice(0, 20000))) {
+      throw liepinPageError('猎聘岗位详情页要求登录或安全验证。', 'auth_required', { riskControl: true });
+    }
+    if (!/<!doctype\s+html|<html[\s>]/i.test(html)) {
+      throw liepinPageError('猎聘岗位详情未返回 HTML。', 'detail_invalid_html');
+    }
+    return { html, url, finalUrl: response.url || url, access };
+  }
+
+  function directTextElements(container, selector = 'span') {
+    if (!container) return [];
+    return [...container.children]
+      .filter((element) => element.matches(selector))
+      .map((element) => normalizeText(element.textContent))
+      .filter(Boolean);
+  }
+
+  function firstText(root, selectors) {
+    for (const selector of selectors) {
+      const text = normalizeText(root.querySelector(selector)?.textContent);
+      if (text) return text;
+    }
+    return '';
+  }
+
+  function extractLabeledValue(root, labels) {
+    if (!root) return '';
+    const candidates = [...root.querySelectorAll('li, p, dd, div, span')];
+    for (const candidate of candidates) {
+      const text = normalizeText(candidate.textContent);
+      for (const label of labels) {
+        const match = text.match(new RegExp(`^${label}\\s*[：:]\\s*(.+)$`));
+        if (match?.[1]) return normalizeText(match[1]);
+      }
+    }
+    return '';
+  }
+
+  function companyExternalId(companyRoot, homePage, contactType) {
+    const href = companyRoot?.querySelector('a[href*="/company/"]')?.getAttribute('href') || '';
+    for (const candidate of [href, contactType === 'hr' ? homePage : '']) {
+      const match = normalizeText(candidate).match(/\/company\/([^/?#]+)/i);
+      if (match?.[1]) return match[1];
+    }
+    return '';
+  }
+
+  function uniqueParagraphText(roots) {
+    const seen = new Set();
+    const parts = [];
+    roots.filter(Boolean).forEach((root) => {
+      const candidates = root.querySelectorAll('p, dd, li');
+      const source = candidates.length ? [...candidates] : [root];
+      source.forEach((element) => {
+        const text = normalizeMultilineText(element.textContent);
+        if (!text || seen.has(text)) return;
+        seen.add(text);
+        parts.push(text);
+      });
+    });
+    return normalizeMultilineText(parts.join('\n'));
+  }
+
+  function normalizeLiepinJobResponse(payload, jobRef, access = {}) {
+    const doc = new DOMParser().parseFromString(payload?.html || '', 'text/html');
+    const preview = access.preview || {};
+    const stoppedTitle = firstText(doc, ['.apply-stop-title']);
+    if (stoppedTitle) {
+      const previous = access.previousJobInfo || {};
+      const stoppedNote = '该职位已暂停招聘';
+      const previousDescription = normalizeMultilineText(previous.description);
+      const description = previousDescription.includes(stoppedNote)
+        ? previousDescription
+        : normalizeMultilineText([previousDescription, stoppedNote].filter(Boolean).join('\n\n'));
+      return {
+        jobRef: { externalId: normalizeText(jobRef.externalId), detailAccessToken: '' },
+        jobInfo: {
+          title: normalizeText(preview.jobTitle || previous.title),
+          category: normalizeText(previous.category),
+          location: normalizeText(preview.jobDqName || previous.location),
+          experience: normalizeText(preview.reqWorkYear || previous.experience),
+          education: normalizeText(preview.reqEdu || previous.education),
+          salary: normalizeText(preview.jobSalary || previous.salary),
+          description,
+          address: normalizeText(previous.address),
+          skills: Array.isArray(previous.skills) ? previous.skills : []
+        },
+        companyProfile: null
+      };
+    }
+    const apply = doc.querySelector('.job-apply-container');
+    const intro = doc.querySelector('.job-intro-container');
+    if (!apply || !intro) {
+      throw liepinPageError('猎聘岗位详情页缺少主岗位容器。', 'detail_selector_missing');
+    }
+    const pageJobElement = apply.querySelector('[data-jobId][data-jobKind]');
+    const pageJobId = normalizeText(pageJobElement?.getAttribute('data-jobId'));
+    if (pageJobId && pageJobId !== normalizeText(jobRef.externalId)) {
+      throw liepinPageError('猎聘详情页岗位 ID 与预览岗位 ID 不一致。', 'job_id_mismatch');
+    }
+    const properties = directTextElements(apply.querySelector('.job-properties'))
+      .filter((text) => !/^招\d+人$/.test(text) && !/更新$/.test(text));
+    const description = normalizeMultilineText(
+      intro.querySelector('[data-selector="job-intro-content"]')?.textContent
+      || intro.querySelector('.paragraph dd')?.textContent
+      || ''
+    );
+    const skillRoot = intro.querySelector('.labels');
+    const skills = skillRoot
+      ? [...skillRoot.querySelectorAll('span, li, a')].map((element) => normalizeText(element.textContent)).filter(Boolean)
+      : [];
+    const companyInfo = doc.querySelector('.company-info-container');
+    const companyIntro = doc.querySelector('.company-intro-container');
+    const companyRoot = companyInfo || companyIntro;
+    const externalId = companyExternalId(companyRoot, access.homePage, access.contactType);
+    const companyName = firstText(companyRoot || doc, [
+      '.company-name',
+      '[data-selector="company-name"]',
+      'h3',
+      'h2',
+      'a[href*="/company/"]'
+    ]) || normalizeText(preview.jobCompany);
+    const companyKey = externalId ? `liepin|${externalId}` : '';
+    return {
+      jobRef: { externalId: normalizeText(jobRef.externalId), detailAccessToken: '' },
+      jobInfo: {
+        title: firstText(apply, ['.name-box > .name', '.name']) || preview.jobTitle,
+        category: extractLabeledValue(intro, ['职位职能', '职能']),
+        location: properties[0] || preview.jobDqName,
+        experience: properties[1] || preview.reqWorkYear,
+        education: properties[2] || preview.reqEdu,
+        salary: firstText(apply, ['.salary']) || preview.jobSalary,
+        description,
+        address: extractLabeledValue(intro, ['工作地址', '职位地址']),
+        skills
+      },
+      companyProfile: externalId ? {
+        companyKey,
+        siteKey: 'liepin',
+        externalId,
+        name: companyName,
+        employeeScale: extractLabeledValue(companyInfo, ['公司规模', '规模']),
+        industry: extractLabeledValue(companyInfo, ['所属行业', '行业']),
+        description: uniqueParagraphText([companyIntro, companyInfo])
+      } : null
+    };
+  }
+
+  function isLiepinJobRiskControlError(error) {
+    return Boolean(error?.riskControl || error?.status === 403 || error?.status === 429);
+  }
+
+  async function persistCompanyProfile(profile) {
+    if (!profile) return;
+    const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_PROFILE_UPSERT', profile });
+    if (response && response.ok === false) throw new Error(response.error || '公司信息保存失败。');
+  }
+
   async function getFilteredContacts(imId, options = {}) {
-    const contacts = filterLiepinRecentContacts(await fetchLiepinContacts(imId));
+    const preparedContacts = Array.isArray(options.contacts) ? options.contacts : null;
+    const contacts = preparedContacts || filterLiepinRecentContacts(await fetchLiepinContacts(imId));
     const store = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatRecords']);
     const pending = store.jobChatPendingRecords;
     const pendingRecords = pending?.siteKey === 'liepin' && Array.isArray(pending.records) ? pending.records : [];
@@ -263,35 +696,71 @@
       const latestMsgId = normalizeText(item?.latestMsgId || '');
       const latestMsgChanged = Boolean(latestMsgId && liepinLatestMsgId(existingRecord) !== latestMsgId);
       const statusChanged = liepinMessageStatusFromRecord(existingRecord) !== liepinMessageStatusFromItem(item);
-      return latestMsgChanged || statusChanged;
+      return latestMsgChanged || statusChanged || liepinNeedsJobDetail(existingRecord);
     });
     return { contacts, contactsToSync, pendingRecords, savedByKey, pendingByKey };
+  }
+
+  function liepinItemSyncNeeds(item, savedByKey, pendingByKey) {
+    const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
+    if (!existingRecord) return { message: true, jobDetail: true };
+    const latestMsgId = normalizeText(item?.latestMsgId || '');
+    const jobDetail = liepinNeedsJobDetail(existingRecord);
+    const messageChanged = Boolean(
+      (latestMsgId && liepinLatestMsgId(existingRecord) !== latestMsgId)
+      || liepinMessageStatusFromRecord(existingRecord) !== liepinMessageStatusFromItem(item)
+    );
+    return {
+      message: !jobDetail && messageChanged,
+      jobDetail
+    };
   }
 
   async function extractLiepinChatRecords(options = {}) {
     const imId = getLiepinImId();
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘，并刷新页面后重试。');
 
-    const { contactsToSync, pendingRecords, savedByKey, pendingByKey } = await getFilteredContacts(imId, options);
+    const preparedSnapshot = await readPreparedSourceList('liepin');
+    const filteredOptions = {
+      ...options,
+      contacts: preparedSnapshot?.list
+    };
+    const { contactsToSync, pendingRecords, savedByKey, pendingByKey } = await getFilteredContacts(imId, filteredOptions);
     const records = [...pendingRecords];
     const totalToSync = contactsToSync.length;
+    const communicationTotal = contactsToSync.filter((item) => liepinItemSyncNeeds(item, savedByKey, pendingByKey).message).length;
+    const jobDetailTotal = contactsToSync.filter((item) => liepinItemSyncNeeds(item, savedByKey, pendingByKey).jobDetail).length;
     let syncedCount = 0;
     let insertedCount = 0;
     let updatedMsgCount = 0;
+    const jobDetailStats = createJobDetailSyncStats();
+    const jobDetailSession = new globalThis.JobChatJobSync.JobDetailSyncSession({
+      requestIntervalMs: 2000,
+      maxRequestsPerPage: Number.MAX_SAFE_INTEGER
+    });
+    const progressCategories = () => ({
+      communication: { completed: insertedCount + updatedMsgCount, total: communicationTotal },
+      jobDetail: {
+        completed: jobDetailStats.success + jobDetailStats.failed + jobDetailStats.skipped,
+        total: jobDetailTotal
+      }
+    });
 
     reportProgress('liepin', '猎聘沟通记录', '猎聘', syncedCount, totalToSync, {
       inserted: insertedCount,
       updated: updatedMsgCount,
       updatedMsg: updatedMsgCount,
-      message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
+      progressCategories: progressCategories(),
+      jobDetailRequired: jobDetailTotal > 0,
+      message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount, jobDetailStats)
     });
-    await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount);
+    await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
 
     for (let i = 0; i < contactsToSync.length; i += 1) {
       const item = contactsToSync[i];
 
       if (await isCancelRequested()) {
-        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount);
+        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
@@ -300,7 +769,7 @@
           synced: syncedCount,
           interrupted: true,
           sourceTotal: totalToSync,
-          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount),
+          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
           records
         };
       }
@@ -309,27 +778,68 @@
 
       const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
       const isUpdate = Boolean(existingRecord);
+      const syncNeeds = liepinItemSyncNeeds(item, savedByKey, pendingByKey);
       const existingIndex = records.findIndex((record) => liepinItemKeys(item).some((itemKey) => {
         const recordKeys = new Set();
         addLiepinRecordKeys(recordKeys, record);
         return recordKeys.has(itemKey);
       }));
-      const nextRecord = await buildLiepinRecord(item, imId, existingIndex >= 0 ? existingIndex + 1 : records.length + 1, existingRecord);
+      const baseRecord = await buildLiepinRecord(item, imId, existingIndex >= 0 ? existingIndex + 1 : records.length + 1, existingRecord);
+      const emptyPreview = isLiepinEmptyJobPreview(baseRecord);
+      const needsJobDetail = liepinNeedsJobDetail(baseRecord);
+      const jobResult = emptyPreview
+        ? { record: baseRecord, status: 'success', skipped: true, requested: false, errorMessage: '' }
+        : await jobDetailSession.syncRecord(baseRecord, { item }, {
+          adapter: globalThis.JobChatSiteAdapters.get('liepin'),
+          policy: 'missing-only',
+          shouldStop: isCancelRequested,
+          onCompanyProfile: persistCompanyProfile
+        });
+      if (jobResult.stopped) {
+        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+        return {
+          pageTitle: document.title || '',
+          pageUrl: location.href,
+          extractedAt: new Date().toISOString(),
+          total: records.length,
+          synced: syncedCount,
+          interrupted: true,
+          sourceTotal: totalToSync,
+          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+          records
+        };
+      }
+      if (emptyPreview && syncNeeds.jobDetail) {
+        jobDetailStats.success += 1;
+      } else if (needsJobDetail) {
+        if (jobResult.requested) jobDetailStats.requested += 1;
+        if (jobResult.record?.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
+        else jobDetailStats.failed += 1;
+      }
+      const nextRecord = {
+        ...jobResult.record,
+        liepin: {
+          ...(jobResult.record?.liepin || {}),
+          jobDetailUrl: jobResult.record?.liepin?.jobDetailUrl || ''
+        }
+      };
       if (existingIndex >= 0) {
         records[existingIndex] = nextRecord;
       } else {
         records.push(nextRecord);
       }
       syncedCount += 1;
-      if (isUpdate) updatedMsgCount += 1;
-      else insertedCount += 1;
+      if (!isUpdate) insertedCount += 1;
+      else if (syncNeeds.message) updatedMsgCount += 1;
       reportProgress('liepin', '猎聘沟通记录', '猎聘', syncedCount, totalToSync, {
         inserted: insertedCount,
         updated: updatedMsgCount,
         updatedMsg: updatedMsgCount,
-        message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
+        progressCategories: progressCategories(),
+        jobDetailRequired: jobDetailTotal > 0,
+        message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount, jobDetailStats)
       });
-      await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount);
+      await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
     }
 
     return {
@@ -340,7 +850,7 @@
       synced: syncedCount,
       interrupted: false,
       sourceTotal: totalToSync,
-      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount),
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
       records
     };
   }
@@ -350,20 +860,136 @@
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘，并刷新页面后重试。');
     const { contacts, contactsToSync, savedByKey, pendingByKey } = await getFilteredContacts(imId);
     const insertedCount = contactsToSync.filter((item) => !findLiepinRecordForItem(pendingByKey, item) && !findLiepinRecordForItem(savedByKey, item)).length;
-    const updatedMsgCount = contactsToSync.length - insertedCount;
+    const updatedMsgCount = contactsToSync.filter((item) => {
+      const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
+      return Boolean(existingRecord) && liepinItemSyncNeeds(item, savedByKey, pendingByKey).message;
+    }).length;
+    const jobDetailSyncCount = contactsToSync.filter((item) => liepinItemSyncNeeds(item, savedByKey, pendingByKey).jobDetail).length;
     return {
-      list: contacts,
+      list: contactsToSync,
       needSync: contactsToSync.length,
-      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount)
+      syncSummary: {
+        ...liepinSyncSummary(insertedCount, updatedMsgCount),
+        messageSync: insertedCount + updatedMsgCount,
+        jobDetailSync: jobDetailSyncCount
+      }
     };
+  }
+
+  async function refreshLiepinRecords(records, options = {}) {
+    const targets = Array.isArray(records) ? records : [];
+    if (!targets.length) return { records: [], results: [], jobDetail: createJobDetailSyncStats() };
+    const imId = getLiepinImId();
+    if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘。');
+    let contactsByKey = null;
+    const findContact = async (record) => {
+      if (record?.liepin?.homePage && record?.liepin?.oppositeImId) {
+        return {
+          imId: record.liepin.imId || imId,
+          oppositeImId: record.liepin.oppositeImId,
+          homePage: record.liepin.homePage,
+          latestMsgId: record.liepin.latestMsgId,
+          latestMsgTime: record.liepin.latestMsgTime,
+          oppositeRead: record.liepin.oppositeRead,
+          name: record.recruiterName,
+          title: record.recruiterTitle,
+          company: record.companyName
+        };
+      }
+      if (!contactsByKey) {
+        contactsByKey = indexLiepinRecords((await fetchLiepinContacts(imId)).map((item) => ({
+          recordKey: `liepin|${normalizeText(item.oppositeImId).toLowerCase()}`,
+          liepin: {
+            oppositeImId: item.oppositeImId,
+            contactKey: liepinContactKey(item),
+            latestMsgId: item.latestMsgId
+          },
+          item
+        })));
+      }
+      return findLiepinRecordForItem(contactsByKey, {
+        oppositeImId: record?.liepin?.oppositeImId,
+        id: record?.liepin?.contactKey,
+        latestMsgId: record?.liepin?.latestMsgId
+      })?.item || null;
+    };
+    const updated = [];
+    const results = [];
+    const jobDetailStats = createJobDetailSyncStats();
+    const session = new globalThis.JobChatJobSync.JobDetailSyncSession({
+      requestIntervalMs: 2000,
+      maxRequestsPerPage: Number.MAX_SAFE_INTEGER
+    });
+    for (let index = 0; index < targets.length; index += 1) {
+      if (options.signal?.aborted || await options.shouldStop?.()) break;
+      const record = targets[index];
+      options.onProgress?.({ recordKey: record.recordKey, status: '同步中', error: '', completed: index, total: targets.length });
+      const item = await findContact(record);
+      if (!item) {
+        const error = '无法在猎聘联系列表中匹配该记录。';
+        jobDetailStats.failed += 1;
+        results.push({ recordKey: record.recordKey, ok: false, error });
+        options.onProgress?.({ recordKey: record.recordKey, status: '失败', error, completed: index + 1, total: targets.length });
+        continue;
+      }
+      let baseRecord;
+      try {
+        baseRecord = await buildLiepinRecord(item, imId, record.index || index + 1, record);
+      } catch (error) {
+        const errorMessage = error?.message || String(error);
+        jobDetailStats.failed += 1;
+        results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
+        options.onProgress?.({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: targets.length });
+        continue;
+      }
+      const emptyPreview = isLiepinEmptyJobPreview(baseRecord);
+      const jobResult = emptyPreview
+        ? { record: baseRecord, status: 'success', skipped: true, requested: false, errorMessage: '' }
+        : await session.syncRecord(baseRecord, { item }, {
+          adapter: globalThis.JobChatSiteAdapters.get('liepin'),
+          policy: 'force',
+          shouldStop: options.shouldStop,
+          signal: options.signal,
+          onLog: options.onLog,
+          onCompanyProfile: persistCompanyProfile
+        });
+      if (jobResult.stopped) break;
+      if (jobResult.requested) jobDetailStats.requested += 1;
+      if (emptyPreview || jobResult.record?.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
+      else jobDetailStats.failed += 1;
+      const nextRecord = { ...jobResult.record, recordKey: record.recordKey };
+      updated.push(nextRecord);
+      const ok = nextRecord.jobInfo?.fetchStatus === 'success';
+      const error = nextRecord.jobInfo?.errorMessage || '';
+      results.push({ recordKey: record.recordKey, ok, jobInfoStatus: nextRecord.jobInfo?.fetchStatus, error });
+      options.onProgress?.({
+        recordKey: record.recordKey,
+        status: ok ? '成功' : '失败',
+        error,
+        completed: index + 1,
+        total: targets.length,
+        record: nextRecord
+      });
+    }
+    const stopped = Boolean(options.signal?.aborted || await options.shouldStop?.());
+    return { records: updated, results, stopped, paused: false, jobDetail: jobDetailStats };
   }
 
   globalThis.JobChatLiepinExtractor = {
     extract: extractLiepinChatRecords,
-    prepare: prepareLiepinSync
+    prepare: prepareLiepinSync,
+    refreshRecords: refreshLiepinRecords
   };
   globalThis.JobChatSiteAdapters?.register('liepin', {
-    siteKey: 'liepin', supportsJobDetail: false, prepareSync: prepareLiepinSync,
-    extractRecords: extractLiepinChatRecords
+    siteKey: 'liepin',
+    supportsJobDetail: true,
+    requiresDetailAccessToken: false,
+    prepareSync: prepareLiepinSync,
+    extractRecords: extractLiepinChatRecords,
+    refreshRecords: refreshLiepinRecords,
+    resolveJobAccess: resolveLiepinJobAccess,
+    fetchJobDetail: fetchLiepinJobDetail,
+    normalizeJobResponse: normalizeLiepinJobResponse,
+    isRiskControlError: isLiepinJobRiskControlError
   });
 })();

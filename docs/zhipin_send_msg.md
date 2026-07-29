@@ -1,6 +1,8 @@
-# BOSS 直聘 WebSocket 消息协议
+# BOSS 直聘批量发送方案与 WebSocket 消息协议
 
-本文根据多组成功 HAR/WebSocket 记录整理，描述认证、`chat` 注册、文本消息、图片消息和服务端回执的实际二进制结构。
+本文统一记录 BOSS 直聘总览查询、批量发送产品方案、扩展实现、测试验收及
+WebSocket 协议。协议部分根据多组成功 HAR/WebSocket 记录整理，描述认证、
+`chat` 注册、文本消息、图片消息和服务端回执的实际二进制结构。
 
 仅用于当前登录账号的正常会话调试。不要提交 Cookie、`wt2`、`zp_token`、HTTP `token`、用户 ID 或安全标识。
 
@@ -21,6 +23,427 @@
 收到相同 sequence、cmid 且 mid 非零的发送 ACK 后，扩展会把总记录的 `lastMessage` 更新为已发送正文，将 `updatedDate` 更新为当前时间，并把 `messageStatus` 设为未读。ACK 超时、连接断开或服务端拒绝时，该条标为“失败”并显示原因，但不更新总记录中的消息。
 
 `pc_device_id` 是聊天注册帧中的当前浏览器设备字段，不是登录凭据。扩展从页面初始化请求、本地运行状态或页面自身发送的 `0x33` 注册帧 `ClientInfo.field_5` 捕获该值；职位页没有建立原生聊天连接时，使用扩展为当前浏览器生成并持久化的稳定 32 位设备标识。它不依赖 toggle 接口响应，也不要求用户重新登录。
+
+## 批量发送产品与实施方案
+
+本节合并原批量发送计划中的产品、架构、测试和验收内容。
+发生历史方案与当前实现差异时，以本文件“扩展 2.0.0 实现说明”和现有代码为准。
+
+### 目标与范围
+
+总览页支持：
+
+1. 查询公司、岗位、招聘者和原消息。
+2. 按全部、未读、已读筛选消息状态。
+3. 勾选 BOSS 联系人并批量发送同一段纯文本消息。
+4. 使用当前已登录的 BOSS 页面会话完成发送。
+5. 按配置速率使用单 WebSocket 串行发送。
+6. 显示每条记录的等待、成功或失败状态。
+7. 允许用户停止正在执行的批次。
+
+支持范围：
+
+- BOSS 直聘已有聊天联系人。
+- 用户主动勾选的记录。
+- 纯文本消息。
+- 单 WebSocket 连接。
+- 单账号使用场景。
+- 严格的联系人精确匹配。
+
+不支持：
+
+- 猎聘消息发送。
+- 从扩展 UI 批量发送图片、文件或语音。
+- 自动创建新联系人会话。
+- 仅靠公司名或招聘者姓名模糊匹配目标。
+- ACK 不明确时自动重发。
+- 同时调度多个 BOSS 登录账号。
+
+本文件仍保留图片消息协议，仅用于协议研究和后续扩展，不代表当前批量发送 UI
+已经支持图片。
+
+### 已验证的最小发送结论
+
+普通文本已经通过以下最小时序获得服务端 20 字节成功 ACK：
+
+```text
+刷新 wt2
+→ 建立 WebSocket
+→ 发送 0x10 认证帧
+→ 发送 chat 注册帧
+→ ACK 初始服务端推送
+→ 发送文本 SendRoot
+→ 收到包含相同 cmid 和非零 mid 的 20 字节 ACK
+```
+
+当前最小发送链路不要求：
+
+- `operation=6` 会话状态帧。
+- `/message/suggest`。
+- `geekEnter`。
+- `historyMsg`。
+
+`getBossData`、`historyMsg` 和 `geekEnter` 可用于目标凭据刷新或会话验证，但不是
+文本 WebSocket 协议的硬性前置条件。
+
+历史失败的一个已确认原因是修改正文后没有从内向外重新计算长度，尤其是最外层
+Varint payload 长度。任何正文、ID、URL 或时间戳变化后都必须重新编码完整帧。
+
+### 总览查询
+
+查询框位于总览页操作栏，只在 `mode=overview` 显示。查询字段：
+
+```text
+companyName
+jobName
+recruiterName
+recruiterTitle
+lastMessage
+```
+
+查询规则：
+
+- 监听 `input`。
+- 停止输入 1 秒后执行。
+- 新输入取消上一次定时器。
+- 去除首尾空白，不区分英文大小写。
+- 空格分隔的多个关键词使用 AND 匹配。
+- 与来源、公司、消息状态、日期和排序组合生效。
+- 清空查询框后恢复其他筛选条件下的记录。
+- 查询或筛选变化后清空选择，防止隐藏记录被误发送。
+
+### 消息状态筛选
+
+```text
+全部 = ""
+未读 = "0"
+已读 = "1"
+```
+
+默认选择全部。无法识别的状态按未读处理，使表格展示和筛选结果一致。
+
+### “发送信息”按钮和弹窗
+
+发送按钮：
+
+- 仅总览模式显示。
+- 没有选择时禁用。
+- 显示当前选择数量。
+- 如果选择中包含猎聘记录，阻止整个批次，不静默跳过。
+
+弹窗包含：
+
+- 多行纯文本输入框和字符计数。
+- 发送/停止按钮。
+- 每分钟发送数。
+- 全部目标列表。
+- 当前批次汇总和发送日志。
+
+目标列表字段：
+
+| 公司 | 岗位 | 招聘者 | 更新时间 | 发送状态 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+
+列表超过可视高度时纵向滚动，不截断目标。
+
+当前实现：
+
+- 默认每分钟发送 10 条。
+- 最小值为 1。
+- 状态统一为“等待、成功、失败”。
+- ACK 超时、连接中断或无法匹配 ACK 归入失败，并显示具体原因。
+- 失败记录不会自动重发。
+- 运行时发送按钮变为停止。
+
+### 发送前校验
+
+以下情况不能启动：
+
+- 消息正文为空。
+- 没有选中记录。
+- 选择中存在非 BOSS 记录。
+- 没有打开 `*.zhipin.com` 标签页。
+- BOSS 页面未登录。
+- 无法获取当前账号的 `userId`。
+- 无法获取当前页面运行所需的 token、`wt2` 或 WebSocket 参数。
+- 目标无法在当前账号联系人列表中精确匹配。
+- 目标缺少有效 `friendId` 或 `peerKey` 且自动补全失败。
+- 已经有发送批次运行。
+
+扩展选择最近访问的 BOSS 标签页，并在该页面主世界检查当前用户。当前版本按
+单账号场景设计，不尝试协调同一浏览器中的多个 BOSS 登录账号。
+
+### BOSS 发送数据模型
+
+联系人发送字段必须拆分保存：
+
+```js
+boss: {
+  ownerUserId,
+  friendId,
+  peerKey,
+  chatSecurityId,
+  uploadSecurityId,
+  friendSource,
+  bossId,
+  encryptBossId,
+  jobId,
+  lastMsgId,
+  lastMessageInfo
+}
+```
+
+主要来源：
+
+```text
+ownerUserId
+  = getUserInfo.json.zpData.userId
+
+friendId
+  = getBossData.data.bossId
+  || item.uid
+  || item.friendId
+
+peerKey
+  = getBossData.data.encryptBossId
+  || item.encryptBossId
+  || item.encryptUid
+  || item.encryptFriendId
+
+chatSecurityId
+  = getGeekFriendList item.securityId
+
+uploadSecurityId
+  = getBossData data.securityId
+
+friendSource
+  = item.friendSource
+```
+
+发送前至少校验：
+
+- `friendId` 是有效数字。
+- `peerKey` 是格式有效的 28 字符标识。
+- 当前记录属于 BOSS。
+- 需要账号约束时，`ownerUserId` 与当前登录用户一致。
+
+`chatSecurityId` 和 `uploadSecurityId` 用途不同，不能合并。纯文本 WebSocket
+发送的必要目标字段是 `friendId` 和 `peerKey`。
+
+### 旧数据和 CSV
+
+- 旧 `boss.securityId` 迁移为 `chatSecurityId`，不直接作为最终发送凭据。
+- 有效的 `friendId` 和 `peerKey` 可直接复用。
+- 字段缺失时，只为本批次不完整目标请求联系人列表和 `getBossData`。
+- 精确补全成功后回写总记录，后续发送不再重复扫描。
+- 禁止使用公司名或招聘者姓名模糊匹配旧记录。
+- CSV 与已有记录以相同 `recordKey` 合并时保留已有 `boss` 数据。
+- 只有 CSV 数据且没有会话字段的记录不可发送。
+
+### 运行架构
+
+WebSocket 在 BOSS 页面主世界创建：
+
+```js
+new WebSocket(`wss://${host}/chatws`, wt2)
+```
+
+职责划分：
+
+| 层 | 职责 |
+| --- | --- |
+| `background.js` | 查找标签页、读取并验证目标、启动任务、转发进度 |
+| `content.js` | 校验页面状态、连接后台与主世界 Hook |
+| `boss-hook.js` | 获取运行参数、管理 WebSocket、处理 ACK、推送和心跳 |
+| `boss-message-protocol.js` | Varint、protobuf、认证、注册、文本帧和 ACK 编解码 |
+| `results.js` | 查询筛选、选择、弹窗、速率、状态和停止操作 |
+
+页面主世界可以复用页面 Cookie、Origin 和 User-Agent，也避免 MV3 Service
+Worker 休眠中断长批次。
+
+### 连接参数
+
+| 参数 | 来源 |
+| --- | --- |
+| `userId` | `getUserInfo.json` |
+| HTTP `token` | 页面 HTTP 请求头或页面自身认证帧 |
+| `wt2` | `/wapi/zppassport/get/wt` |
+| WebSocket 主机 | `/wapi/zpchat/config/ws` |
+| `pc_device_id` | 页面运行状态、注册帧或扩展持久化的稳定设备标识 |
+| `public_ip` | `getUserInfo.json.zpData.clientIP` |
+| `version` | 当前实现配置 |
+| `clientCode` | 当前实现配置 |
+
+HTTP `token`、`zp_token` 和 `wt2` 是不同值，不能互换。认证值只保存在页面内存，
+不写入扩展存储。
+
+### sequence、cmid 和 ACK
+
+- 注册 sequence 为 `1`。
+- 第一条业务消息从后续 sequence 开始递增。
+- 每个待确认请求按 sequence 保存。
+- `cmid` 使用 `BigInt`，批次内唯一。
+- `ChatMessage.field_4` 和 `field_11` 必须相同。
+- 只有 ACK 的 sequence、cmid 匹配且 `mid != 0` 才标记成功。
+- 服务端推送使用其自身 sequence 回复 `0x40` ACK。
+
+详细字节布局、大小端和 protobuf 字段见本文后续协议章节。
+
+### 限速和队列
+
+```text
+最小发送间隔 = 60000 / 每分钟发送数
+```
+
+规则：
+
+- 单 WebSocket。
+- 严格串行。
+- 每次只处理一个目标。
+- 当前目标得到明确结果后才进入下一条等待。
+- 下一条开始时间不得早于上一次发送时间加最小间隔。
+- 停止操作关闭当前连接，未发送记录保持等待。
+
+### 成功、失败和记录更新
+
+成功必须满足：
+
+```text
+frameType == 0x40
+payloadLength == 18
+ack.sequence == 当前请求 sequence
+ack.cmid == 当前消息 cmid
+ack.mid != 0
+```
+
+成功后：
+
+- 总记录 `lastMessage` 更新为发送正文。
+- `updatedDate` 更新为当前时间。
+- `messageStatus` 设为未读。
+
+单条目标补全失败、参数非法或服务端拒绝时，只标记该条失败，继续后续目标。
+
+发送后出现以下情况时不得自动重发：
+
+- ACK 超时。
+- WebSocket 断开。
+- ACK 无法解析或匹配。
+- 页面在 ACK 前刷新。
+
+以下情况停止整个批次：
+
+- 标签页关闭或刷新导致任务上下文丢失。
+- 登录失效或用户变化。
+- WebSocket 认证或注册失败。
+- 心跳超时。
+- 本地协议长度校验失败。
+
+### 心跳
+
+- 定时发送 `c0 00`。
+- 收到 `d0 00` 更新连接存活时间。
+- 收到其他合法服务端帧也更新存活时间。
+- 对 `0x32 chat` 推送及时回复 ACK。
+- 心跳超时停止批次。
+- 批次结束主动关闭 WebSocket。
+
+### 进度、日志和敏感信息
+
+弹窗展示：
+
+```text
+已完成 / 总数
+成功数
+失败数
+下一条预计发送时间
+```
+
+发送日志默认隐藏，仅当结果页 URL 含 `log=enable` 时显示。后台仍持续记录日志。
+
+日志和本地存储禁止包含：
+
+```text
+Cookie
+HTTP token
+zp_token
+wt2
+完整 friendId
+完整 peerKey
+chatSecurityId
+uploadSecurityId
+完整二进制认证帧
+```
+
+进度事件只传递记录键、状态、错误和发送时间等非敏感数据。
+
+### 相关实现文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `results.html` | 查询框、发送按钮、弹窗和样式 |
+| `results.js` | 查询、筛选、目标预检、弹窗和进度 |
+| `results-database.js` | 发送速率等非敏感设置 |
+| `boss-extractor.js` | 联系人标识拆分和发送前自动补全 |
+| `shared-records.js` | 字段规范化和旧数据迁移 |
+| `content.js` | 登录检查、任务消息和主世界桥接 |
+| `boss-hook.js` | token、页面参数、WebSocket 和发送状态机 |
+| `boss-message-protocol.js` | 二进制协议编解码 |
+| `background.js` | 标签页、目标和任务调度 |
+| `manifest.json` | 主世界资源注册 |
+
+### 测试计划
+
+逻辑测试：
+
+- 查询输入防抖、多字段和多关键词 AND 匹配。
+- 消息状态筛选。
+- Varint 边界值。
+- 中文、emoji 和长文本。
+- protobuf 嵌套长度。
+- uint64 `BigInt`。
+- ACK 大端 `cmid`、`mid`。
+- sequence 递增。
+- 每分钟发送间隔。
+
+数据测试：
+
+- 新 BOSS 记录字段完整。
+- 旧记录迁移。
+- CSV 合并保留 BOSS 数据。
+- 独立 CSV 记录不可发送。
+- 猎聘记录不可发送。
+- `ownerUserId` 不一致时阻止发送。
+
+集成测试：
+
+- 无 BOSS 标签页。
+- 未登录。
+- 已登录但缺少运行时 token。
+- 认证和注册成功。
+- 单条文本成功。
+- 多条文本按速率顺序发送。
+- ACK 超时。
+- WebSocket 中途关闭。
+- 标签页刷新或关闭。
+- 服务端推送 ACK。
+- 目标列表滚动。
+- 用户停止批次。
+- `npm run package` 打包验证。
+
+### 验收标准
+
+1. 用户可以查询并筛选总览记录。
+2. 用户可以选择有效 BOSS 记录并打开发送弹窗。
+3. 弹窗完整展示目标，超出高度时可滚动。
+4. 扩展能够验证登录态、补齐目标并建立 WebSocket。
+5. 消息严格按配置速率串行发送。
+6. 只有匹配 sequence、cmid 且 `mid != 0` 的 ACK 才显示成功。
+7. 失败原因准确展示，失败目标不影响后续目标。
+8. ACK 不明确的消息不自动重发。
+9. 猎聘、账号不匹配和无法精确匹配的记录不会发送。
+10. 停止操作可以关闭当前批次。
+11. 日志和存储中不出现认证凭据或完整联系人安全标识。
 
 ## 1. 基础编码
 
@@ -352,9 +775,9 @@ message RpcPush {
 
 客户端需要用服务端推送的二字节 sequence 回复 `0x40` ACK。
 
-### 5.2 初始化目标会话
+### 5.2 网页完整会话初始化（非文本发送硬前置）
 
-“打开并初始化目标会话”不是单一页面操作。完整成功 HAR 中，在发送实际聊天消息之前依次出现：
+完整成功 HAR 中，网页在发送实际聊天消息之前依次执行：
 
 ```text
 1. GET  /wapi/zpchat/geek/getBossData
@@ -405,7 +828,8 @@ resident=
 scene=
 ```
 
-推荐实现为串行初始化函数：
+如果需要研究或完整模拟网页行为，可使用以下串行初始化函数。当前扩展的纯文本
+批量发送不执行这组初始化步骤：
 
 ```js
 async function initializeConversation(context) {
@@ -455,7 +879,10 @@ async function initializeConversation(context) {
 }
 ```
 
-HAR 可以证明网页成功流程执行了以上步骤，但不能单独证明每一步都是服务端接受消息的硬性要求。在完成逐项消融验证前，应完整、串行复现，并在发送 `SendRoot` 前等待 WS ACK 和 `/message/suggest` 响应。
+HAR 可以证明网页成功流程执行了以上步骤，但最小成功发送实测已经确认：
+`operation=6`、`/message/suggest`、`geekEnter` 和 `historyMsg` 都不是当前纯文本发送的
+硬性前置。不要为了纯文本批量发送无条件增加这些请求；只有在协议研究或功能明确
+依赖会话初始化时，才应完整串行复现并等待相应 ACK 和 HTTP 响应。
 
 ## 6. 文本消息帧
 
@@ -679,7 +1106,11 @@ function wrapFrame(frameType, payload) {
 
 这些动态值应取自当前页面运行状态或官方页面生成结果，不应从旧 HAR 长期复用。
 
-## 11. 最小正确时序
+## 11. 网页完整观测时序
+
+以下时序来自网页完整成功 HAR，用于协议研究。它包含会话初始化请求，但不表示
+每一步都是当前扩展发送纯文本的硬性依赖；当前扩展使用前文“已验证的最小发送
+结论”。
 
 ```text
 刷新 Cookie/zp_token/token/wt2

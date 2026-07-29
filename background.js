@@ -24,6 +24,16 @@ function detectSupportedSite(tabUrl) {
   return SUPPORTED_SITES.find((site) => site.hostPattern.test(hostname)) || null;
 }
 
+function migrateBossChatSecurityId(record) {
+  if (!record || (record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘')) return record;
+  const oldBoss = record.boss || {};
+  const chatSecurityId = String(oldBoss.chatSecurityId || oldBoss.securityId || '').trim();
+  if (oldBoss.chatSecurityId === chatSecurityId && !Object.prototype.hasOwnProperty.call(oldBoss, 'securityId')) return record;
+  const boss = { ...oldBoss, chatSecurityId };
+  delete boss.securityId;
+  return { ...record, boss };
+}
+
 function supportedSiteNames() {
   return 'zhipin.com（BOSS直聘）、liepin.com（猎聘）';
 }
@@ -280,7 +290,7 @@ function appendSyncReloadLog(entry, includeRefreshSummary = false) {
     const store = await chrome.storage.local.get(keys);
     const requestLogs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
     const updates = {
-      jobChatRequestLogs: [...requestLogs, { time, siteKey: 'boss', ...entry }].slice(-80)
+      jobChatRequestLogs: [...requestLogs, { time, siteKey: 'boss', ...entry }].slice(-1000)
     };
     if (includeRefreshSummary) {
       const refreshLogs = Array.isArray(store.jobChatRefreshLogs) ? store.jobChatRefreshLogs : [];
@@ -296,9 +306,18 @@ async function refreshSelectedRecords(message) {
   if (!recordKeys.size) throw new Error('没有选中记录。');
   const storageScope = message?.storageScope === 'pending' ? 'pending' : 'total';
   const store = await chrome.storage.local.get(['jobChatRecords', 'jobChatPendingRecords']);
-  const sourceRecords = storageScope === 'pending'
+  const storedSourceRecords = storageScope === 'pending'
     ? (Array.isArray(store.jobChatPendingRecords?.records) ? store.jobChatPendingRecords.records : [])
     : (Array.isArray(store.jobChatRecords) ? store.jobChatRecords : []);
+  const sourceRecords = storedSourceRecords.map(migrateBossChatSecurityId);
+  if (sourceRecords.some((record, index) => record !== storedSourceRecords[index])) {
+    if (storageScope === 'pending') {
+      const pending = { ...(store.jobChatPendingRecords || {}), records: sourceRecords, total: sourceRecords.length };
+      await chrome.storage.local.set({ jobChatPendingRecords: pending, bossChatStatsLatest: pending });
+    } else {
+      await chrome.storage.local.set({ jobChatRecords: sourceRecords });
+    }
+  }
   const selectedRecords = sourceRecords.filter((record) => recordKeys.has(String(record?.recordKey || '')));
   const pendingOrder = new Map((store.jobChatPendingRecords?.records || []).map((record, index) => [String(record?.recordKey || ''), index]));
   const sourceOrder = new Map(sourceRecords.map((record, index) => [String(record?.recordKey || ''), index]));
@@ -310,13 +329,19 @@ async function refreshSelectedRecords(message) {
     return Number(leftOrder || 0) - Number(rightOrder || 0);
   });
   if (records.length !== recordKeys.size) throw new Error('部分选中记录已不存在，请刷新列表后重试。');
-  if (records.some((record) => record?.siteKey !== 'boss' && record?.sourceName !== 'BOSS直聘')) {
-    throw new Error('当前仅支持更新 BOSS直聘记录；猎聘岗位详情暂不支持。');
-  }
-  const tabs = await chrome.tabs.query({ url: ['https://*.zhipin.com/*'] });
-  if (!tabs.length) throw new Error('没有打开 BOSS直聘标签页，请打开并登录后重试。');
+  const recordSiteKey = (record) => record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : (record?.sourceName === 'BOSS直聘' ? 'boss' : ''));
+  const selectedSiteKeys = new Set(records.map(recordSiteKey).filter(Boolean));
+  if (selectedSiteKeys.size !== 1) throw new Error('请选择同一个招聘网站的记录后再更新详情。');
+  const siteKey = [...selectedSiteKeys][0];
+  if (siteKey !== 'boss' && siteKey !== 'liepin') throw new Error('选中记录所属网站暂不支持岗位详情更新。');
+  const siteName = siteKey === 'liepin' ? '猎聘' : 'BOSS直聘';
+  const tabPatterns = siteKey === 'liepin'
+    ? ['https://*.liepin.com/*']
+    : ['https://*.zhipin.com/*'];
+  const tabs = await chrome.tabs.query({ url: tabPatterns });
+  if (!tabs.length) throw new Error(`没有打开${siteName}标签页，请打开并登录后重试。`);
   const tab = [...tabs].sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
-  if (!tab?.id) throw new Error('无法选择 BOSS直聘标签页。');
+  if (!tab?.id) throw new Error(`无法选择${siteName}标签页。`);
   activeJobDetailRefreshTabId = tab.id;
   activeJobDetailRefreshRunId = message.runId || null;
   const runId = message.runId || null;
@@ -360,10 +385,8 @@ async function refreshSelectedRecords(message) {
     });
     addJobDetailStats(jobDetail, data.jobDetail);
 
-    const successfulKeys = new Set(
-      [...resultsByKey.values()].filter((result) => result.ok).map((result) => String(result.recordKey))
-    );
-    remainingRecords = records.filter((record) => !successfulKeys.has(String(record.recordKey)));
+    const completedKeys = new Set([...resultsByKey.keys()]);
+    remainingRecords = records.filter((record) => !completedKeys.has(String(record.recordKey)));
 
     const riskReload = Boolean(data.reloadRequired);
     const intervalReload = !riskReload && Boolean(data.periodicReloadRequired);
@@ -472,14 +495,14 @@ async function refreshSelectedRecords(message) {
   if (!response?.ok && !stopped) {
     const logEntry = {
       time: new Date().toISOString(),
-      siteKey: 'boss',
+      siteKey,
       step: 'refresh:messageResponse',
       request: { type: 'JOB_CHAT_REFRESH_RECORDS', tabId: tab.id, recordKeys: records.map((record) => record.recordKey), rate: message.rate, debugLog: Boolean(message.debugLog) },
       response: { ok: Boolean(response?.ok), error: String(response?.error || '').slice(0, 500) }
     };
     const requestLogStore = await chrome.storage.local.get(['jobChatRequestLogs']);
     const logs = Array.isArray(requestLogStore.jobChatRequestLogs) ? requestLogStore.jobChatRequestLogs : [];
-    await chrome.storage.local.set({ jobChatRequestLogs: [...logs, logEntry].slice(-80) });
+    await chrome.storage.local.set({ jobChatRequestLogs: [...logs, logEntry].slice(-1000) });
     throw new Error(response?.error || '更新详情失败。');
   }
   const refreshed = [...refreshedByKey.values()];
@@ -487,18 +510,19 @@ async function refreshSelectedRecords(message) {
   const merge = (oldRecord) => {
     const next = byKey.get(String(oldRecord?.recordKey || ''));
     if (!next) return oldRecord;
-    return {
+    return migrateBossChatSecurityId({
       ...oldRecord, ...next,
       boss: { ...(oldRecord.boss || {}), ...(next.boss || {}) },
+      liepin: { ...(oldRecord.liepin || {}), ...(next.liepin || {}) },
       jobRef: { ...(oldRecord.jobRef || {}), ...(next.jobRef || {}) },
       jobInfo: next.jobInfo || oldRecord.jobInfo || {},
       note: oldRecord.note || next.note || '',
       applicationDate: oldRecord.applicationDate || next.applicationDate
-    };
+    });
   };
   if (storageScope === 'pending') {
     const pending = store.jobChatPendingRecords || { records: [] };
-    const nextRecords = (pending.records || []).map(merge);
+    const nextRecords = sourceRecords.map(merge);
     await chrome.storage.local.set({ jobChatPendingRecords: { ...pending, records: nextRecords, total: nextRecords.length, extractedAt: new Date().toISOString() } });
   } else {
     await chrome.storage.local.set({ jobChatRecords: sourceRecords.map(merge) });
@@ -686,8 +710,7 @@ async function extractFromTab(tab, syncSelection) {
 
   await chrome.storage.local.set({
     jobChatLiepinCancelRequested: false,
-    jobChatCancelRequested: false,
-    jobChatRequestLogs: []
+    jobChatCancelRequested: false
   });
 
   await chrome.storage.local.set({
@@ -902,15 +925,16 @@ async function extractFromTab(tab, syncSelection) {
 }
 
 function mergeRefreshedRecord(oldRecord, nextRecord) {
-  return {
+  return migrateBossChatSecurityId({
     ...oldRecord,
     ...nextRecord,
     boss: { ...(oldRecord?.boss || {}), ...(nextRecord?.boss || {}) },
+    liepin: { ...(oldRecord?.liepin || {}), ...(nextRecord?.liepin || {}) },
     jobRef: { ...(oldRecord?.jobRef || {}), ...(nextRecord?.jobRef || {}) },
     jobInfo: nextRecord?.jobInfo || oldRecord?.jobInfo || {},
     note: oldRecord?.note || nextRecord?.note || '',
     applicationDate: oldRecord?.applicationDate || nextRecord?.applicationDate
-  };
+  });
 }
 
 async function saveRefreshProgressRecord(progress) {
@@ -1170,17 +1194,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const sourceTab = message.tab;
     const site = detectSupportedSite(sourceTab?.url || '');
+    const startedAt = new Date().toISOString();
+    const pendingData = {
+      pageTitle: sourceTab?.title || '',
+      pageUrl: sourceTab?.url || '',
+      extractedAt: startedAt,
+      siteKey: site?.key || '',
+      siteTitle: site?.title || '招聘沟通记录',
+      sourceName: site?.source || '',
+      total: 0,
+      records: [],
+      syncSummary: {
+        fetched: 0,
+        inserted: 0,
+        updated: 0,
+        updatedMsg: 0,
+        saved: false,
+        interrupted: false,
+        completed: false,
+        synced: 0,
+        sourceTotal: 0
+      }
+    };
 
     await chrome.storage.local.set({
       jobChatLastSourceTab: { id: sourceTab?.id, url: sourceTab?.url, title: sourceTab?.title },
       jobChatLiepinCancelRequested: false,
       jobChatCancelRequested: false,
+      jobChatPendingRecords: pendingData,
+      bossChatStatsLatest: pendingData,
       jobChatExtractionStatus: {
         state: 'loading',
         siteKey: site?.key || '',
         siteTitle: site?.title || '招聘沟通记录',
         sourceName: site?.source || '',
-        startedAt: new Date().toISOString(),
+        startedAt,
         message: site ? `正在提取${site.source}沟通记录...` : '正在检查当前网站...'
       }
     });

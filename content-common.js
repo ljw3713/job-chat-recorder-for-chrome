@@ -1,5 +1,6 @@
 (function () {
   const { formatDate } = globalThis.JobChatUtils;
+  let requestLogWriteQueue = Promise.resolve();
 
   function threeMonthsAgo() {
     const date = new Date();
@@ -127,16 +128,19 @@
     }
   }
 
-  async function appendRequestLog(entry) {
-    try {
+  function appendRequestLog(entry) {
+    requestLogWriteQueue = requestLogWriteQueue.catch(() => {}).then(async () => {
       const store = await chrome.storage.local.get(['jobChatRequestLogs']);
       const logs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
       logs.push({
         time: new Date().toISOString(),
         ...entry
       });
-      await chrome.storage.local.set({ jobChatRequestLogs: logs.slice(-80) });
-    } catch (_) {}
+      await chrome.storage.local.set({ jobChatRequestLogs: logs.slice(-1000) });
+    }).catch((error) => {
+      console.error('[JobChat] 请求日志保存失败：', error);
+    });
+    return requestLogWriteQueue;
   }
 
   function detectSiteByLocation() {

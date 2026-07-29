@@ -91,7 +91,7 @@
 - 将平台字段转换为通用岗位和公司结构。
 
 当前已由 `site-adapters.js` 注册 BOSS 和猎聘适配器。BOSS 声明
-`supportsJobDetail: true`，猎聘暂时声明 `supportsJobDetail: false`。
+`supportsJobDetail: true`；猎聘已在后续实现中接入岗位详情同步。
 
 ## 5. 通用岗位数据模型
 
@@ -874,7 +874,7 @@ jobInfo.detail
 #### `liepin-extractor.js`
 
 - 保留现有聊天同步。
-- 暂时声明 `supportsJobDetail: false`。
+- 已在后续实现中声明 `supportsJobDetail: true` 并接入 HTML 岗位详情解析。
 - 后续按相同适配器接口接入。
 
 #### `content.js`

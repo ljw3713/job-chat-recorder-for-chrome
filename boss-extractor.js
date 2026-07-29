@@ -105,6 +105,89 @@
     return bossRecordKeyParts(record?.boss?.peerKey || record?.boss?.encryptBossId || record?.boss?.bossId, record?.boss?.jobId);
   }
 
+  function bossRecordKeyPartsFromStoredKey(record) {
+    const parts = normalizeText(record?.recordKey).toLowerCase().split('|');
+    if (parts[0] !== 'boss') return { bossId: '', jobId: '' };
+    return { bossId: normalizeText(parts[1]), jobId: normalizeText(parts[2]) };
+  }
+
+  function bossRecordJobId(record) {
+    return normalizeText(record?.boss?.jobId || bossRecordKeyPartsFromStoredKey(record).jobId).toLowerCase();
+  }
+
+  function bossContactMatchesItem(record, item) {
+    const stored = bossRecordKeyPartsFromStoredKey(record);
+    const recordBossIds = new Set([
+      record?.boss?.peerKey,
+      record?.boss?.encryptBossId,
+      record?.boss?.encryptFriendId,
+      record?.boss?.bossId,
+      stored.bossId
+    ].map((value) => normalizeText(value).toLowerCase()).filter(Boolean));
+    const itemBossIds = [
+      item?.encryptBossId,
+      item?.encryptUid,
+      item?.encryptFriendId
+    ].map((value) => normalizeText(value).toLowerCase()).filter(Boolean);
+    if (itemBossIds.some((value) => recordBossIds.has(value))) return true;
+
+    const recordFriendId = normalizeText(record?.boss?.friendId);
+    const itemFriendIds = [
+      item?.friendId,
+      item?.uid,
+      item?.bossId
+    ].map((value) => normalizeText(value)).filter(Boolean);
+    if (recordFriendId && itemFriendIds.includes(recordFriendId)) return true;
+
+    const recordSecurityId = normalizeText(record?.boss?.chatSecurityId || record?.boss?.securityId);
+    return Boolean(recordSecurityId && recordSecurityId === normalizeText(item?.securityId));
+  }
+
+  function bossItemJobId(item) {
+    return normalizeText(item?.jobId).toLowerCase();
+  }
+
+  function bossJobMatchesItem(record, item) {
+    const recordJobId = bossRecordJobId(record);
+    const itemJobId = bossItemJobId(item);
+    return Boolean(recordJobId && itemJobId && recordJobId === itemJobId);
+  }
+
+  function findBossItemForRefresh(record, list) {
+    const candidates = (Array.isArray(list) ? list : []).filter((item) => bossContactMatchesItem(record, item));
+    return candidates.find((item) => bossJobMatchesItem(record, item)) || candidates[0] || null;
+  }
+
+  function bossDetailJobId(detail) {
+    return normalizeText(
+      detail?.job?.jobId
+      || detail?.data?.jobId
+      || detail?.data?.job?.jobId
+    ).toLowerCase();
+  }
+
+  function refreshBossContactFields(record, item, detail, ownerUserId = '') {
+    const data = detail?.data || {};
+    const oldBoss = record?.boss || {};
+    const boss = {
+      ...oldBoss,
+      ownerUserId: ownerUserId || oldBoss.ownerUserId || '',
+      friendId: data.bossId || item?.uid || item?.bossId || item?.friendId || oldBoss.friendId || '',
+      friendSource: item?.friendSource ?? item?.sourceType ?? oldBoss.friendSource ?? '',
+      bossId: data.bossId || item?.uid || item?.bossId || oldBoss.bossId || '',
+      encryptBossId: data.encryptBossId || item?.encryptBossId || item?.encryptUid || oldBoss.encryptBossId || '',
+      peerKey: data.encryptBossId || item?.encryptBossId || item?.encryptUid || item?.encryptFriendId || oldBoss.peerKey || '',
+      chatSecurityId: item?.securityId || oldBoss.chatSecurityId || oldBoss.securityId || '',
+      jobId: oldBoss.jobId || bossRecordJobId(record) || item?.jobId || ''
+    };
+    delete boss.securityId;
+    delete boss.bossSecurityId;
+    delete boss.bossJobSecurityId;
+    delete boss.uploadSecurityId;
+    delete boss.encryptJobId;
+    return { ...record, boss, updatedAt: new Date().toISOString() };
+  }
+
   function bossFriendKey(item) {
     return bossItemRecordKey(item) || bossIdOfItem(item) || item?.securityId || item?.uid || item?.jobId || item?.lastMessageInfo?.msgId || item?.encryptFriendId || item?.friendId || '';
   }
@@ -123,7 +206,7 @@
 
   function addBossRecordKeys(keys, record) {
     const primaryKey = bossRecordRecordKey(record);
-    const securityId = record?.boss?.securityId;
+    const securityId = record?.boss?.chatSecurityId || record?.boss?.securityId;
     const friendId = record?.boss?.encryptFriendId || record?.boss?.friendId;
     [primaryKey, securityId, friendId, record?.recordKey].forEach((key) => addBossKeyVariants(keys, key));
     if (!primaryKey && !securityId && !friendId) addBossKeyVariants(keys, record?.recordKey);
@@ -311,7 +394,7 @@
       if (id) labelByFriendId.set(id, item);
     });
 
-    return detailList.map((item, index) => {
+    const merged = detailList.map((item, index) => {
       const id = normalizeText(item?.friendId);
       const labelItem = (id && labelByFriendId.get(id)) || labelByOrder[index] || {};
       return {
@@ -323,6 +406,14 @@
         updateTime: item?.updateTime || labelItem?.updateTime || item?.lastMessageInfo?.msgTime || item?.lastTS || ''
       };
     });
+    const mergedFriendIds = new Set(merged.map((item) => normalizeText(item?.friendId)).filter(Boolean));
+    labelByOrder.forEach((item) => {
+      const id = normalizeText(item?.friendId);
+      if (id && mergedFriendIds.has(id)) return;
+      merged.push(item);
+      if (id) mergedFriendIds.add(id);
+    });
+    return merged;
   }
 
   async function fetchBossFriendDetailListWithRequest(request, onLog, beforeRequest, signal) {
@@ -984,10 +1075,38 @@
   }
 
   async function refreshBossRecords(records, options = {}) {
-    const targets = Array.isArray(records) ? records : [];
+    const targets = (Array.isArray(records) ? records : []).map((record) => {
+      const oldBoss = record?.boss || {};
+      const boss = {
+        ...oldBoss,
+        chatSecurityId: normalizeText(oldBoss.chatSecurityId || oldBoss.securityId)
+      };
+      delete boss.securityId;
+      return { ...record, boss };
+    });
     if (!targets.length) return { records: [], results: [] };
     const beforeRequest = createBossRequestPacer(options.rate, options.shouldStop, options.signal);
-    const selectedFriendIds = [...new Set(targets.map((record) => normalizeText(record?.boss?.friendId)).filter(Boolean))];
+    const lookupTargets = targets.filter((record) => (
+      !normalizeText(record?.boss?.chatSecurityId)
+      || !normalizeText(record?.boss?.friendId)
+    ));
+    let selectedLabels = [];
+    if (lookupTargets.length) {
+      try {
+        const labelList = await fetchBossLabelFriendList(options.onLog, beforeRequest);
+        selectedLabels = labelList.filter((item) => lookupTargets.some((record) => bossContactMatchesItem(record, item)));
+        options.onLog?.({
+          step: 'refresh:contactLookup',
+          message: `有 ${lookupTargets.length} 条目标缺少 chatSecurityId 或 friendId，从当前联系人列表精确匹配到 ${selectedLabels.length} 条`
+        });
+      } catch (error) {
+        options.onLog?.({ step: 'refresh:contactLookup', message: `重新拉取联系人列表失败：${error?.message || String(error)}` });
+      }
+    }
+    const selectedFriendIds = [...new Set([
+      ...targets.map((record) => normalizeText(record?.boss?.friendId)),
+      ...bossFriendIdsFromLabelList(selectedLabels)
+    ].filter(Boolean))];
     options.onLog?.({ step: 'refresh:selectedTargets', message: `按已保存记录顺序更新 ${targets.length} 条目标，仅请求 ${selectedFriendIds.length} 个 friendId 的详情` });
     let detailList = [];
     try {
@@ -999,7 +1118,7 @@
       }
       throw error;
     }
-    const list = mergeBossFriendDetailList([], detailList);
+    const list = mergeBossFriendDetailList(selectedLabels, detailList);
     let ownerUserId = '';
     try {
       ownerUserId = await fetchBossOwnerUserId(options.onLog, beforeRequest, options.signal);
@@ -1031,19 +1150,44 @@
         completed: index,
         total: orderedTargets.length
       });
-      const item = list.find((candidate) => bossRecordMatchesItem(record, candidate));
+      const item = findBossItemForRefresh(record, list);
       if (!item) {
+        jobDetailStats.failed += 1;
         results.push({ recordKey: record.recordKey, ok: false, error: '目标无法在当前联系人列表中精确匹配。' });
         notify({ recordKey: record.recordKey, status: '失败', error: '目标无法在当前联系人列表中精确匹配。', completed: index + 1, total: orderedTargets.length });
-        break;
+        continue;
+      }
+      const recordJobId = bossRecordJobId(record);
+      const itemJobId = bossItemJobId(item);
+      if (recordJobId && itemJobId && recordJobId !== itemJobId) {
+        const errorMessage = '联系人已匹配，但当前关联岗位已变化，无法用新岗位覆盖原记录。';
+        const contactRecord = refreshBossContactFields(record, item, null, ownerUserId);
+        updated.push(contactRecord);
+        jobDetailStats.failed += 1;
+        results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
+        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length, record: contactRecord });
+        continue;
       }
       let detail = null;
       try { detail = await fetchBossData(item, options.onLog, beforeRequest, options.signal); } catch (error) {
         if (isBossRefreshStopped(error, options.signal)) break;
         const errorMessage = safeJobDetailError(error) || '获取 BOSS 数据失败。';
+        const contactRecord = refreshBossContactFields(record, item, null, ownerUserId);
+        updated.push(contactRecord);
+        jobDetailStats.failed += 1;
         results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
-        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length });
-        break;
+        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length, record: contactRecord });
+        continue;
+      }
+      const detailJobId = bossDetailJobId(detail);
+      if (recordJobId && detailJobId && recordJobId !== detailJobId) {
+        const errorMessage = '联系人已匹配，但联系人详情关联岗位已变化，无法用新岗位覆盖原记录。';
+        const contactRecord = refreshBossContactFields(record, item, detail, ownerUserId);
+        updated.push(contactRecord);
+        jobDetailStats.failed += 1;
+        results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
+        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length, record: contactRecord });
+        continue;
       }
       const baseRecord = bossListItemToRecord(item, detail, index, record, ownerUserId);
       let nextRecord = baseRecord;
@@ -1108,10 +1252,9 @@
       const error = nextRecord.jobInfo?.errorMessage || '';
       results.push({ recordKey: record.recordKey, ok, jobInfoStatus: nextRecord.jobInfo?.fetchStatus, error });
       notify({ recordKey: record.recordKey, status: jobDetailSkipped ? '已停止' : (ok ? '成功' : '失败'), error, completed: index + 1, total: orderedTargets.length, record: nextRecord });
-      if (!ok) break;
     }
     const stopped = Boolean(options.signal?.aborted || await options.shouldStop?.());
-    const paused = !stopped && results.some((result) => !result.ok);
+    const paused = !stopped && jobDetailStats.stoppedByRiskControl;
     return { records: updated, results, stopped, paused, jobDetail: jobDetailStats };
   }
 
@@ -1239,7 +1382,7 @@
     refreshRecords: refreshBossRecords
   };
   globalThis.JobChatSiteAdapters?.register('boss', {
-    siteKey: 'boss', supportsJobDetail: true, prepareSync: prepareBossSync,
+    siteKey: 'boss', supportsJobDetail: true, requiresDetailAccessToken: true, prepareSync: prepareBossSync,
     extractRecords: extractBossChatRecords, refreshRecords: refreshBossRecords,
     resolveJobAccess: resolveBossJobAccess,
     fetchJobDetail: fetchBossJobDetail,

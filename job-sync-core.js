@@ -89,7 +89,9 @@
       const access = await adapter.resolveJobAccess(record, context, options);
       nextJobRef = normalizeJobRef(access?.jobRef);
       if (!nextJobRef.externalId) throw new Error('未获取到岗位外部标识。');
-      if (!nextJobRef.detailAccessToken) throw new Error('未获取到岗位详情访问凭证。');
+      if (adapter.requiresDetailAccessToken && !nextJobRef.detailAccessToken) {
+        throw new Error('未获取到岗位详情访问凭证。');
+      }
       if (options.signal?.aborted || await options.shouldStop?.()) throw stoppedError();
       if (options.requestSession) {
         const allowed = await options.requestSession.beforeRequest(options);

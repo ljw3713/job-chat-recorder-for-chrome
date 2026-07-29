@@ -80,10 +80,17 @@ const runtimeConfig = globalThis.JobChatRuntimeConfig || {
   enableDebugLog: false,
   resultsPagePath: (targetMode) => `results.html?mode=${targetMode === 'sync' ? 'sync' : 'overview'}`
 };
-const sendLogEnabled = Boolean(runtimeConfig.enableDebugLog) && pageParams.get('log') !== 'disable';
+const sendLogEnabled = Boolean(runtimeConfig.enableDebugLog) && pageParams.get('log') === 'enable';
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey, normalizeJobRef, normalizeJobInfo, isCompleteJobInfo } = globalThis.JobChatRecords;
+
+function isResolvedJobInfo(record) {
+  return isCompleteJobInfo(record)
+    || ((record?.siteKey === 'liepin' || record?.sourceName === '猎聘')
+      && record?.liepin?.jobPreviewStatus === 'empty'
+      && record?.jobInfo?.fetchStatus === 'success');
+}
 const ResultsDb = globalThis.JobChatResultsDb;
 
 let latestData = null;
@@ -292,8 +299,9 @@ function categoryProgressValue(category) {
 function renderSyncCategoryProgress(status) {
   if (!syncCategoryProgress) return;
   const categories = status?.progressCategories;
+  const supportsCategoryProgress = status?.siteKey === 'boss' || status?.siteKey === 'liepin';
   const shouldShow = mode === 'sync'
-    && status?.siteKey === 'boss'
+    && supportsCategoryProgress
     && categories
     && (status?.state === 'loading' || status?.state === 'ready');
   syncCategoryProgress.style.display = shouldShow ? '' : 'none';
@@ -309,7 +317,9 @@ function renderSyncCategoryProgress(status) {
   communicationProgressBar.style.width = `${communication.percent}%`;
   jobDetailProgressBar.style.width = `${jobDetail.percent}%`;
   if (syncRefreshNote) {
-    syncRefreshNote.style.display = status?.jobDetailRequired || jobDetail.total > 0 ? '' : 'none';
+    const showBossRefreshNote = status?.siteKey === 'boss'
+      && Boolean(status?.jobDetailRequired || jobDetail.total > 0);
+    syncRefreshNote.style.display = showBossRefreshNote ? '' : 'none';
   }
 }
 
@@ -399,7 +409,7 @@ function applyFilters() {
   if (company) records = records.filter((r) => r.companyName === company);
   const messageStatus = messageStatusFilter?.value || '';
   if (messageStatus) records = records.filter((r) => (normalizeMessageStatus(r.messageStatus) || '0') === messageStatus);
-  if (jobDetailNotSyncedOnly) records = records.filter((record) => !isCompleteJobInfo(record));
+  if (jobDetailNotSyncedOnly) records = records.filter((record) => !isResolvedJobInfo(record));
   const words = queryValue.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) records = records.filter((record) => {
     const searchable = [record.companyName, record.jobName, record.recruiterName, record.recruiterTitle, record.lastMessage].join(' ').toLocaleLowerCase();
@@ -771,9 +781,13 @@ function showJobInfoCard(target, record) {
   clearTimeout(jobInfoHideTimer);
   const info = normalizeJobInfo(record.jobInfo);
   const empty = !info.skills.length && !info.description;
+  const emptyLiepinPreview = (record?.siteKey === 'liepin' || record?.sourceName === '猎聘')
+    && record?.liepin?.jobPreviewStatus === 'empty';
   const status = info.fetchStatus === 'failed'
     ? `获取失败：${info.errorMessage || '请稍后重试。'}`
-    : (info.errorMessage || (empty ? '暂无岗位详情，可勾选后点击“更新详情”。' : ''));
+    : (info.errorMessage || (emptyLiepinPreview
+      ? '猎聘岗位预览请求成功，该联系人当前没有关联岗位。'
+      : (empty ? '暂无岗位详情，可勾选后点击“更新详情”。' : '')));
   const summary = [info.salary, info.location, info.experience, info.education].filter(Boolean).join(' · ');
   jobInfoCard.innerHTML = `<h3>${escapeHtml(info.title || record.jobName || '岗位详情')}</h3><div class="job-info-meta">${escapeHtml(summary)}</div><div class="keywords">${info.skills.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join('')}</div><p class="detail">${escapeHtml(info.description || status)}</p><div class="job-info-meta">${escapeHtml(info.address ? `地址：${info.address}` : '')}${escapeHtml(info.fetchedAt ? ` 最近获取：${info.fetchedAt}` : '')}</div>`;
   const rect = target.getBoundingClientRect();
@@ -895,8 +909,9 @@ async function openUpdateDetailsModal() {
   }
   const records = selectedRecords();
   if (!records.length) return;
-  if (records.some((record) => record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘')) {
-    alert('当前仅支持更新 BOSS直聘记录；猎聘岗位详情暂不支持。');
+  const siteKeys = new Set(records.map((record) => record.siteKey || (record.sourceName === '猎聘' ? 'liepin' : (record.sourceName === 'BOSS直聘' ? 'boss' : ''))));
+  if (siteKeys.size !== 1 || !['boss', 'liepin'].includes([...siteKeys][0])) {
+    alert('请选择同一个招聘网站的记录后再更新岗位详情。');
     return;
   }
   const selectedRecordKeys = new Set(records.map((record) => record.recordKey));
@@ -1121,7 +1136,7 @@ async function loadAndRenderLatest() {
       configureTodayOnly();
       populateFilters();
       selectedKeys = new Set([...selectedKeys].filter((key) => allRecords.some((record) => record.recordKey === key)));
-      if (allRecords.length) renderTable();
+      renderTable();
       renderLoading(extractionStatus);
       return;
     }

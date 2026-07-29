@@ -2,6 +2,39 @@
 
 本文记录 Chrome 插件在 BOSS 直聘（`*.zhipin.com`）页面同步沟通记录时的调用流程、接口与请求参数。
 
+## 主要功能
+
+### 批量发送信息
+
+总览页支持选择多条 BOSS 联系人记录并批量发送同一段文本。发送流程会：
+
+- 使用同步记录中保存的 `friendId`、`peerKey` 和当前登录用户信息。
+- 在发送前只补齐本批次缺失的联系人和会话标识。
+- 通过 BOSS 页面主世界 Hook 建立和复用 WebSocket。
+- 编码、发送消息协议帧并等待 ACK。
+- 按用户设置的速率顺序发送。
+- 单条失败不阻断后续目标，并记录发送状态和日志。
+- 支持停止正在执行的批量发送。
+
+WebSocket 协议、认证数据、发送调用链、ACK 和错误处理详见
+[BOSS 批量发送信息说明](zhipin_send_msg.md)。
+
+### 同步岗位信息
+
+BOSS 沟通记录同步同时支持岗位详情：
+
+- 同步页自动补齐新增记录及岗位信息不完整的已有记录。
+- 总览页支持对选中 BOSS 记录强制刷新岗位详情。
+- 先通过 `getBossData` 获取岗位 ID 和详情访问凭证，再请求岗位详情 JSON。
+- 岗位信息映射为通用 `jobRef` 和 `jobInfo`。
+- 公司资料按 `boss|{companyId}` 独立保存。
+- 岗位详情请求按固定 2 秒间隔执行。
+- 每完成 4 次岗位详情请求后刷新最近使用的 BOSS 标签页，再继续剩余任务。
+- 支持暂停、恢复、部分保存、分类进度和风控重试。
+
+通用岗位架构、BOSS 适配器、数据模型、限速和验收标准详见
+[BOSS 岗位信息同步方案](zhipin-job-detail-plan.md)。
+
 ## 触发流程
 
 用户点击插件弹窗的“同步当前聊天记录”按钮后：
@@ -33,8 +66,8 @@
 GET https://www.zhipin.com/wapi/zprelation/friend/geekFilterByLabel?labelId=0
 ```
 
-| 参数 | 位置 | 值 | 说明 |
-| --- | --- | --- | --- |
+| 参数      | 位置  | 值  | 说明                       |
+| --------- | ----- | --- | -------------------------- |
 | `labelId` | Query | `0` | 默认标签，获取联系人列表。 |
 
 响应列表从以下字段之一读取：
@@ -56,8 +89,8 @@ Content-Type: application/x-www-form-urlencoded
 friendIds=<id1,id2,id3,...>
 ```
 
-| 参数 | 位置 | 值 | 说明 |
-| --- | --- | --- | --- |
+| 参数        | 位置      | 值                  | 说明                                            |
+| ----------- | --------- | ------------------- | ----------------------------------------------- |
 | `friendIds` | Form Body | 逗号分隔的联系人 ID | 由接口一返回的联系人 ID 组成；每批最多 150 个。 |
 
 响应列表字段与接口一相同。接口一和接口二的结果按 `friendId` 合并；合并后仅保留最近三个月有更新的记录，更新时间优先级为：`updateTime` → `lastMessageInfo.msgTime` → `lastTS`。
@@ -80,11 +113,11 @@ friendIds=<id1,id2,id3,...>
 GET https://www.zhipin.com/wapi/zpchat/geek/getBossData?bossId=<bossId>&bossSource=<bossSource>&securityId=<securityId>
 ```
 
-| 参数 | 位置 | 来源 | 说明 |
-| --- | --- | --- | --- |
-| `bossId` | Query | `item.encryptBossId`，缺失时 `item.encryptUid` | 招聘者加密 ID。缺失时不请求该接口。 |
-| `bossSource` | Query | `item.sourceType`，缺失时 `0` | 招聘者来源类型。 |
-| `securityId` | Query | `item.securityId` | 会话/安全标识。缺失时不请求该接口。 |
+| 参数         | 位置  | 来源                                           | 说明                                |
+| ------------ | ----- | ---------------------------------------------- | ----------------------------------- |
+| `bossId`     | Query | `item.encryptBossId`，缺失时 `item.encryptUid` | 招聘者加密 ID。缺失时不请求该接口。 |
+| `bossSource` | Query | `item.sourceType`，缺失时 `0`                  | 招聘者来源类型。                    |
+| `securityId` | Query | `item.securityId`                              | 会话/安全标识。缺失时不请求该接口。 |
 
 该请求失败不会中断整次同步：代码会忽略本条详情错误，并使用联系人列表中的已有字段生成记录。
 
@@ -98,7 +131,7 @@ GET https://www.zhipin.com/wapi/zpchat/geek/getBossData?bossId=<bossId>&bossSour
 - 消息状态转换规则：BOSS 返回 `lastMessageInfo.status === '1'` 时，插件记录为 `'0'`；其他情况记录为 `'1'`。
 - 实际同步逐条执行，间隔由 `jobChatSyncRateSettings` 或兼容的 `jobChatSyncRateLimit` 控制；默认约为 500 ms。
 
-## 2.0.0 发送前自动补全
+## 批量发送：发送前自动补全
 
 批量发送优先使用同步后保存在本地记录中的数字 `friendId` 和 28 字符 `peerKey`。字段完整时不会重复扫描联系人列表，也不会重复调用 `getBossData`。
 
@@ -111,7 +144,8 @@ GET https://www.zhipin.com/wapi/zpchat/geek/getBossData?bossId=<bossId>&bossSour
 
 如果联系人详情接口失败，扩展会继续尝试使用联系人列表已有字段。单条记录仍无法精确匹配或补齐时，该条发送状态标为“失败”，备注显示“标识不全，需要重新同步记录再发送”，不会阻断同批次其他有效记录。
 
-WebSocket 发送协议、认证数据来源、ACK 和失败处理详见 [zhipin_send_msg.md](zhipin_send_msg.md)。
+WebSocket 发送协议、认证数据来源、ACK 和失败处理详见
+[BOSS 批量发送信息说明](zhipin_send_msg.md)。
 
 ## 相关源码
 
@@ -120,3 +154,5 @@ WebSocket 发送协议、认证数据来源、ACK 和失败处理详见 [zhipin_
 - BOSS 同步实现：`boss-extractor.js`
 - 页面请求捕获：`boss-hook.js`
 - WebSocket 协议编解码：`boss-message-protocol.js`
+- 批量发送专题：[zhipin_send_msg.md](zhipin_send_msg.md)
+- 岗位信息同步专题：[zhipin-job-detail-plan.md](zhipin-job-detail-plan.md)
