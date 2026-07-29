@@ -1,7 +1,11 @@
 (function () {
   const { detectSiteByLocation, writePreparedSourceList } = globalThis.JobChatContentCommon;
   let bossHookReady = false;
+  let jobDetailRefreshStopRequested = false;
+  let jobDetailRefreshAbortController = null;
   const bossHookWaiters = [];
+  const bossPageRequestWaiters = new Map();
+  let bossPageRequestSequence = 0;
 
   function waitForBossHook() {
     if (bossHookReady) return Promise.resolve();
@@ -9,6 +13,67 @@
       const timeout = setTimeout(() => reject(new Error('请登录或者刷新Boss直聘页')), 5000);
       bossHookWaiters.push(() => { clearTimeout(timeout); resolve(); });
     });
+  }
+
+  function bossPageRequest(url, init = {}) {
+    return waitForBossHook().then(() => new Promise((resolve, reject) => {
+      const requestId = `boss-page-request-${Date.now()}-${bossPageRequestSequence += 1}`;
+      const signal = init.signal;
+      const timeoutMs = Math.max(1000, Number(init.timeoutMs || 30000));
+      if (signal?.aborted) {
+        const error = new Error('已停止同步。');
+        error.name = 'AbortError';
+        reject(error);
+        return;
+      }
+      let timeout = null;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const stopRequest = (error) => {
+        const waiter = bossPageRequestWaiters.get(requestId);
+        if (!waiter) return;
+        bossPageRequestWaiters.delete(requestId);
+        cleanup();
+        window.postMessage({
+          source: 'job-chat-recorder-boss-content',
+          command: { type: 'BOSS_PAGE_REQUEST_ABORT', requestId }
+        }, '*');
+        reject(error);
+      };
+      const onAbort = () => {
+        const error = new Error('已停止同步。');
+        error.name = 'AbortError';
+        stopRequest(error);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      bossPageRequestWaiters.set(requestId, {
+        resolve,
+        reject,
+        cleanup
+      });
+      timeout = setTimeout(() => {
+        const error = new Error(`BOSS 页面请求等待响应超时（${Math.round(timeoutMs / 1000)} 秒）。`);
+        error.name = 'TimeoutError';
+        stopRequest(error);
+      }, timeoutMs);
+      window.postMessage({
+        source: 'job-chat-recorder-boss-content',
+        command: {
+          type: 'BOSS_PAGE_REQUEST',
+          requestId,
+          url: String(url),
+          method: String(init.method || 'GET'),
+          headers: init.headers || {},
+          body: init.body ?? null
+        }
+      }, '*');
+    }));
+  }
+
+  if (location.hostname.endsWith('zhipin.com')) {
+    globalThis.JobChatBossPageRequest = bossPageRequest;
   }
 
   if (location.hostname.endsWith('zhipin.com')) {
@@ -37,6 +102,19 @@
       if (payload.type === 'BOSS_GEEK_FRIEND_LIST') {
         chrome.storage.local.set({ jobChatBossFriendListCapture: payload });
       }
+      if (payload.type === 'BOSS_PAGE_REQUEST_RESULT') {
+        const waiter = bossPageRequestWaiters.get(payload.requestId);
+        if (waiter) {
+          bossPageRequestWaiters.delete(payload.requestId);
+          waiter.cleanup();
+          if (payload.ok) waiter.resolve(payload.result);
+          else {
+            const error = new Error(payload.errorMessage || 'BOSS 页面请求失败。');
+            error.name = payload.errorName || 'Error';
+            waiter.reject(error);
+          }
+        }
+      }
       if (payload.type === 'BOSS_SEND_PROGRESS' || payload.type === 'BOSS_SEND_STARTED' || payload.type === 'BOSS_SEND_FINISHED' || payload.type === 'BOSS_SEND_ERROR') {
         chrome.runtime.sendMessage({ type: 'BOSS_SEND_PROGRESS', progress: payload });
       }
@@ -47,25 +125,22 @@
 
   async function prepareByCurrentSite(siteKey) {
     const detected = detectSiteByLocation();
-    if (siteKey === 'boss' && detected === 'boss') {
-      const result = await globalThis.JobChatBossExtractor.prepare();
-      await writePreparedSourceList('boss', result.list);
-      return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, syncSummary: result.syncSummary, records: [] };
-    }
-    if (siteKey === 'liepin' && detected === 'liepin') {
-      const result = await globalThis.JobChatLiepinExtractor.prepare();
-      await writePreparedSourceList('liepin', result.list);
+    const adapter = globalThis.JobChatSiteAdapters?.get(siteKey);
+    if (siteKey === detected && typeof adapter?.prepareSync === 'function') {
+      const result = await adapter.prepareSync();
+      await writePreparedSourceList(siteKey, result.list, {
+        ...(result.syncSummary || {}),
+        sourceTotal: Number(result.needSync || 0)
+      });
       return { pageTitle: document.title || '', pageUrl: location.href, total: 0, sourceTotal: result.needSync, sourceListTotal: result.list.length, syncSummary: result.syncSummary, records: [] };
     }
     return extractByCurrentSite(siteKey);
   }
 
-  async function extractByCurrentSite(siteKey) {
+  async function extractByCurrentSite(siteKey, options = {}) {
     const detected = detectSiteByLocation();
-    if (siteKey === 'boss' && detected === 'boss') return globalThis.JobChatBossExtractor.extract();
-    if (siteKey === 'liepin' && detected === 'liepin') return globalThis.JobChatLiepinExtractor.extract();
-    if (detected === 'boss') return globalThis.JobChatBossExtractor.extract();
-    if (detected === 'liepin') return globalThis.JobChatLiepinExtractor.extract();
+    const adapter = globalThis.JobChatSiteAdapters?.get(siteKey === detected ? siteKey : detected);
+    if (typeof adapter?.extractRecords === 'function') return adapter.extractRecords(options);
     throw new Error('暂不支持当前网站。目前支持 zhipin.com（BOSS直聘）、liepin.com（猎聘）。');
   }
 
@@ -92,8 +167,57 @@
       sendResponse({ ok: true });
       return;
     }
+    if (message?.type === 'JOB_CHAT_REFRESH_RECORDS') {
+      const detected = detectSiteByLocation();
+      const adapter = globalThis.JobChatSiteAdapters?.get(detected);
+      if (!adapter?.supportsJobDetail || typeof adapter.refreshRecords !== 'function') {
+        sendResponse({ ok: false, error: `${detected === 'liepin' ? '猎聘' : '当前网站'}暂不支持更新岗位详情。` });
+        return;
+      }
+      jobDetailRefreshStopRequested = false;
+      const abortController = new AbortController();
+      jobDetailRefreshAbortController = abortController;
+      adapter.refreshRecords(message.records || [], {
+        forceChat: true,
+        forceJobDetail: true,
+        rate: message.rate,
+        retryDelaySeconds: message.retryDelaySeconds,
+        retryCount: message.retryCount,
+        riskRetryAttempt: message.riskRetryAttempt,
+        riskRetryAttempts: message.riskRetryAttempts,
+        allowRiskReload: message.allowRiskReload,
+        shouldStop: () => jobDetailRefreshStopRequested,
+        signal: abortController.signal,
+        onProgress: (progress) => chrome.runtime.sendMessage({
+          type: 'JOB_CHAT_REFRESH_PROGRESS',
+          progress: { ...progress, storageScope: message.storageScope, runId: message.runId }
+        }),
+        onLog: message.debugLog ? (entry) => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_LOG', entry }) : undefined
+      })
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((error) => sendResponse(abortController.signal.aborted
+          ? { ok: true, data: { records: [], results: [], stopped: true } }
+          : { ok: false, error: error?.message || String(error) }))
+        .finally(() => {
+          if (jobDetailRefreshAbortController === abortController) jobDetailRefreshAbortController = null;
+        });
+      return true;
+    }
+    if (message?.type === 'JOB_CHAT_STOP_REFRESH') {
+      jobDetailRefreshStopRequested = true;
+      jobDetailRefreshAbortController?.abort();
+      sendResponse({ ok: true });
+      return;
+    }
     if (message?.type !== 'JOB_CHAT_EXTRACT_RECORDS' && message?.type !== 'BOSS_EXTRACT_CHAT_RECORDS') return;
-    extractByCurrentSite(message?.siteKey)
+    extractByCurrentSite(message?.siteKey, {
+      syncSelection: message?.syncSelection,
+      retryDelaySeconds: message?.retryDelaySeconds,
+      retryCount: message?.retryCount,
+      riskRetryAttempt: message?.riskRetryAttempt,
+      riskRetryAttempts: message?.riskRetryAttempts,
+      allowRiskReload: message?.allowRiskReload
+    })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

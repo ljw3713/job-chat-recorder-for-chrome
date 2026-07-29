@@ -40,16 +40,78 @@
     return rows;
   }
 
+  function cloneJsonObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    try {
+      const cloned = JSON.parse(JSON.stringify(value));
+      return cloned && typeof cloned === 'object' && !Array.isArray(cloned) ? cloned : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function stripJobData(record) {
+    const data = cloneJsonObject(record);
+    [
+      'index',
+      'recordKey',
+      'sourceName',
+      'companyName',
+      'jobName',
+      'applicationDate',
+      'updatedDate',
+      'note',
+      'messageStatus',
+      'recruiterName',
+      'recruiterTitle',
+      'lastMessage',
+      'jobRef',
+      'jobInfo',
+      'bossJobSecurityId',
+      'externalJobId',
+      'jobDetailAccessToken',
+      'companyKey'
+    ].forEach((field) => delete data[field]);
+    if (data.boss && typeof data.boss === 'object') {
+      delete data.boss.encryptJobId;
+      delete data.boss.bossJobSecurityId;
+      delete data.boss.bossSecurityId;
+    }
+    return data;
+  }
+
+  function csvInternalData(record) {
+    return JSON.stringify(stripJobData(record));
+  }
+
+  function parseCsvInternalData(value, rowNumber) {
+    const text = normalizeText(value);
+    if (!text) return null;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      throw new Error(`CSV 第 ${rowNumber} 行“内部数据”不是有效 JSON。`);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`CSV 第 ${rowNumber} 行“内部数据”必须是 JSON 对象。`);
+    }
+    return stripJobData(parsed);
+  }
+
   function rowsFromImportedCsv(text) {
     const rows = parseCsv(text.replace(/^\ufeff/, ''));
     if (!rows.length) return [];
     const headers = rows[0].map((h) => normalizeText(h));
     const get = (row, name) => row[headers.indexOf(name)] || '';
+    const hasInternalDataColumn = headers.includes('内部数据');
     return rows.slice(1).filter((row) => row.some((cell) => normalizeText(cell))).map((row, index) => {
       const sourceName = get(row, '来源');
       const recruiter = get(row, '招聘者') || get(row, '招聘者信息');
       const [recruiterName, recruiterTitle] = recruiter.split('/').map((v) => normalizeText(v));
+      const internalData = parseCsvInternalData(get(row, '内部数据'), index + 2);
       const record = {
+        ...(internalData || {}),
         index: index + 1,
         recordKey: get(row, '唯一索引id'),
         sourceName,
@@ -63,12 +125,62 @@
         recruiterName,
         recruiterTitle: recruiterTitle || '',
         lastMessage: get(row, '原消息'),
-        importedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        importedAt: internalData?.importedAt || new Date().toISOString(),
+        updatedAt: internalData?.updatedAt || new Date().toISOString(),
+        _csvHasInternalData: hasInternalDataColumn && Boolean(internalData)
       };
       record.recordKey = normalizeText(record.recordKey) || makeRecordKey(record);
       return record;
     });
+  }
+
+  function mergeImportedRecord(existingRecord, importedRecord) {
+    const existing = existingRecord || {};
+    const imported = importedRecord || {};
+    const hasInternalData = Boolean(imported._csvHasInternalData);
+    const merged = {
+      ...existing,
+      ...imported
+    };
+    delete merged._csvHasInternalData;
+
+    if (hasInternalData) {
+      if (existing.boss || imported.boss) {
+        merged.boss = {
+          ...(existing.boss || {}),
+          ...(imported.boss || {}),
+          lastMessageInfo: {
+            ...(existing.boss?.lastMessageInfo || {}),
+            ...(imported.boss?.lastMessageInfo || {})
+          }
+        };
+      }
+      if (existing.liepin || imported.liepin) {
+        merged.liepin = {
+          ...(existing.liepin || {}),
+          ...(imported.liepin || {})
+        };
+      }
+    } else {
+      if (existing.boss) merged.boss = existing.boss;
+      else delete merged.boss;
+      if (existing.liepin) merged.liepin = existing.liepin;
+      else delete merged.liepin;
+    }
+
+    if (existing.jobRef !== undefined) merged.jobRef = existing.jobRef;
+    else delete merged.jobRef;
+    if (existing.jobInfo !== undefined) merged.jobInfo = existing.jobInfo;
+    else delete merged.jobInfo;
+    if (existing.companyKey !== undefined) merged.companyKey = existing.companyKey;
+    else delete merged.companyKey;
+    if (merged.boss) {
+      delete merged.boss.encryptJobId;
+      delete merged.boss.uploadSecurityId;
+      delete merged.boss.bossJobSecurityId;
+      delete merged.boss.bossSecurityId;
+    }
+    return merged;
   }
 
   async function loadResultsState() {
@@ -128,7 +240,9 @@
   globalThis.JobChatResultsDb = {
     tsv,
     csv,
+    csvInternalData,
     rowsFromImportedCsv,
+    mergeImportedRecord,
     loadResultsState,
     saveSyncRecords,
     saveOverviewRecords,

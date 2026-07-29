@@ -50,7 +50,7 @@ async function refreshCurrentSiteHint() {
 
 if (overviewBtn) {
   overviewBtn.addEventListener('click', async () => {
-    await chrome.tabs.create({ url: chrome.runtime.getURL('results.html?mode=overview'), active: true });
+    await chrome.tabs.create({ url: chrome.runtime.getURL(globalThis.JobChatRuntimeConfig.resultsPagePath('overview')), active: true });
     window.close();
   });
 }

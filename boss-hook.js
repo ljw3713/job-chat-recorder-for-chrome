@@ -1,8 +1,10 @@
 (function () {
-  if (window.__JOB_CHAT_BOSS_HOOK_INSTALLED__) {
+  const hookVersion = '2026-07-28-page-request-v1';
+  if (window.__JOB_CHAT_BOSS_HOOK_VERSION__ === hookVersion) {
     try { window.postMessage({ source: 'job-chat-recorder-boss-hook', payload: { type: 'BOSS_HOOK_READY' } }, '*'); } catch (_) {}
     return;
   }
+  window.__JOB_CHAT_BOSS_HOOK_VERSION__ = hookVersion;
   window.__JOB_CHAT_BOSS_HOOK_INSTALLED__ = true;
 
   function emit(payload) {
@@ -32,6 +34,14 @@
       httpToken = token;
       console.info('[JobChat BOSS send] 已从当前页面捕获认证 token。');
     }
+  }
+
+  function randomTraceId() {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const values = new Uint8Array(9);
+    crypto.getRandomValues(values);
+    const suffix = Array.from(values, (value) => alphabet[value % alphabet.length]).join('');
+    return `F-${Date.now().toString(16).padStart(13, '0')}${suffix}`;
   }
 
   function tokenFromAuthFrame(value) {
@@ -268,6 +278,65 @@
   };
 
   let activeBatch = null;
+  const activePageRequests = new Map();
+
+  async function ensureHttpToken(signal) {
+    if (httpToken) return httpToken;
+    try {
+      const response = await originalFetch.call(window, '/wapi/zpuser/wap/getUserInfo.json', {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          'X-Requested-With': 'XMLHttpRequest',
+          traceId: randomTraceId()
+        },
+        signal
+      });
+      const payload = await response.json();
+      rememberToken(payload?.zpData?.token);
+    } catch (_) {}
+    return httpToken;
+  }
+
+  async function performPageRequest(command) {
+    const parsedUrl = new URL(command.url, location.origin);
+    if (parsedUrl.origin !== location.origin) throw new Error('只允许请求当前 BOSS 站点。');
+    const allowedPaths = new Set(['/wapi/zpgeek/job/detail.json']);
+    if (!allowedPaths.has(parsedUrl.pathname)) throw new Error('不允许的 BOSS 页面请求。');
+
+    const controller = new AbortController();
+    activePageRequests.set(command.requestId, controller);
+    try {
+      const headers = new Headers(command.headers || {});
+      headers.set('X-Requested-With', 'XMLHttpRequest');
+      headers.set('traceId', randomTraceId());
+      const token = await ensureHttpToken(controller.signal);
+      if (!token) throw new Error('无法获取 BOSS 页面运行时 token，请刷新页面后重试。');
+      headers.set('token', token);
+      const requestHeaders = Object.fromEntries(headers.entries());
+      const response = await originalFetch.call(window, parsedUrl.toString(), {
+        method: String(command.method || 'GET').toUpperCase(),
+        credentials: 'include',
+        headers,
+        body: command.body ?? undefined,
+        signal: controller.signal
+      });
+      const responseText = await response.text();
+      return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url,
+        requestHeaders,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        responseText
+      };
+    } finally {
+      activePageRequests.delete(command.requestId);
+    }
+  }
+
   function sendLog(message) {
     const text = String(message || '');
     console.info('[JobChat BOSS send]', text);
@@ -459,6 +528,25 @@
   window.addEventListener('message', async (event) => {
     if (event.source !== window || event.data?.source !== 'job-chat-recorder-boss-content') return;
     const command = event.data.command || {};
+    if (command.type === 'BOSS_PAGE_REQUEST_ABORT') {
+      activePageRequests.get(command.requestId)?.abort();
+      return;
+    }
+    if (command.type === 'BOSS_PAGE_REQUEST') {
+      try {
+        const result = await performPageRequest(command);
+        emit({ type: 'BOSS_PAGE_REQUEST_RESULT', requestId: command.requestId, ok: true, result });
+      } catch (error) {
+        emit({
+          type: 'BOSS_PAGE_REQUEST_RESULT',
+          requestId: command.requestId,
+          ok: false,
+          errorName: error?.name || 'Error',
+          errorMessage: error?.message || String(error)
+        });
+      }
+      return;
+    }
     if (command.type === 'BOSS_STOP_BATCH') {
       if (activeBatch) {
         activeBatch.cancelled = true;

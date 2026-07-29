@@ -102,17 +102,29 @@
     }
   }
 
-  async function writePreparedSourceList(siteKey, list) {
+  async function writePreparedSourceList(siteKey, list, syncSummary) {
     try {
       await chrome.storage.local.set({
         jobChatPreparedSourceList: {
           siteKey,
           pageUrl: location.href,
           capturedAt: new Date().toISOString(),
+          syncSummary: syncSummary || {},
           list: Array.isArray(list) ? list : []
         }
       });
     } catch (_) {}
+  }
+
+  async function readPreparedSourceList(siteKey) {
+    try {
+      const store = await chrome.storage.local.get(['jobChatPreparedSourceList']);
+      const snapshot = store.jobChatPreparedSourceList;
+      if (snapshot?.siteKey !== siteKey || !Array.isArray(snapshot.list)) return null;
+      return snapshot;
+    } catch (_) {
+      return null;
+    }
   }
 
   async function appendRequestLog(entry) {
@@ -144,6 +156,7 @@
     savePartial,
     readIgnoredRecords,
     writePreparedSourceList,
+    readPreparedSourceList,
     appendRequestLog,
     detectSiteByLocation
   };

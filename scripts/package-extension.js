@@ -16,9 +16,12 @@ const packageFiles = [
   'results-database.js',
   'background.js',
   'background-database.js',
+  'runtime-config.js',
   'shared-utils.js',
   'shared-records.js',
   'content-common.js',
+  'site-adapters.js',
+  'job-sync-core.js',
   'boss-extractor.js',
   'liepin-extractor.js',
   'content.js',
@@ -48,6 +51,12 @@ function copyPackageFiles() {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.copyFileSync(sourcePath, targetPath);
   }
+
+  const runtimeConfigPath = path.join(stageDir, 'runtime-config.js');
+  const developmentConfig = fs.readFileSync(runtimeConfigPath, 'utf8');
+  const releaseConfig = developmentConfig.replace('enableDebugLog: true', 'enableDebugLog: false');
+  if (releaseConfig === developmentConfig) throw new Error('Unable to create release runtime config.');
+  fs.writeFileSync(runtimeConfigPath, releaseConfig);
 }
 
 function createZip(outputName) {

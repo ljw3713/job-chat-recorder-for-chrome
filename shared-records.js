@@ -37,6 +37,59 @@
     return normalizeRecordDate(raw);
   }
 
+  function normalizeStringList(value) {
+    const items = Array.isArray(value) ? value : [];
+    const seen = new Set();
+    return items.map((item) => normalizeText(item)).filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+  }
+
+  function normalizeMultilineText(value) {
+    return String(value || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function normalizeJobRef(value) {
+    const jobRef = value && typeof value === 'object' ? value : {};
+    return {
+      externalId: normalizeText(jobRef.externalId || ''),
+      detailAccessToken: normalizeText(jobRef.detailAccessToken || '')
+    };
+  }
+
+  function normalizeJobInfo(value) {
+    const jobInfo = value && typeof value === 'object' ? value : {};
+    return {
+      title: normalizeText(jobInfo.title || ''),
+      category: normalizeText(jobInfo.category || ''),
+      location: normalizeText(jobInfo.location || ''),
+      experience: normalizeText(jobInfo.experience || ''),
+      education: normalizeText(jobInfo.education || ''),
+      salary: normalizeText(jobInfo.salary || ''),
+      description: normalizeMultilineText(jobInfo.description),
+      address: normalizeText(jobInfo.address || ''),
+      skills: normalizeStringList(jobInfo.skills),
+      fetchStatus: normalizeText(jobInfo.fetchStatus || ''),
+      fetchedAt: normalizeText(jobInfo.fetchedAt || ''),
+      errorMessage: normalizeText(jobInfo.errorMessage || '')
+    };
+  }
+
+  function isCompleteJobInfo(record) {
+    const jobRef = normalizeJobRef(record?.jobRef);
+    const jobInfo = record?.jobInfo;
+    const requiredFields = ['title', 'category', 'location', 'experience', 'education', 'salary', 'description', 'address'];
+    return Boolean(
+      jobRef.externalId
+      && jobInfo
+      && normalizeText(jobInfo.fetchStatus) === 'success'
+      && requiredFields.every((field) => Object.prototype.hasOwnProperty.call(jobInfo, field))
+      && Array.isArray(jobInfo.skills)
+    );
+  }
+
   function makeRecordKey(record) {
     const siteKey = normalizeText(record?.siteKey || '');
     const sourceName = normalizeText(record?.sourceName || '');
@@ -71,8 +124,14 @@
       recruiterName: normalizeText(record?.recruiterName),
       recruiterTitle: normalizeText(record?.recruiterTitle),
       lastMessage: normalizeText(record?.lastMessage),
-      messageStatus: normalizeText(record?.messageStatus || '')
+      messageStatus: normalizeText(record?.messageStatus || ''),
+      jobRef: normalizeJobRef(record?.jobRef),
+      jobInfo: normalizeJobInfo(record?.jobInfo),
+      companyKey: normalizeText(record?.companyKey || '')
     };
+    delete normalized.bossJobSecurityId;
+    delete normalized.externalJobId;
+    delete normalized.jobDetailAccessToken;
     if (normalized.siteKey === 'boss' || normalized.sourceName === 'BOSS直聘') {
       const oldBoss = normalized.boss || {};
       normalized.boss = {
@@ -81,16 +140,18 @@
         friendId: normalizeText(oldBoss.friendId || ''),
         peerKey: normalizeText(oldBoss.peerKey || oldBoss.encryptBossId || oldBoss.encryptFriendId || ''),
         chatSecurityId: normalizeText(oldBoss.chatSecurityId || oldBoss.securityId || ''),
-        uploadSecurityId: normalizeText(oldBoss.uploadSecurityId || ''),
         friendSource: oldBoss.friendSource ?? '',
         bossId: normalizeText(oldBoss.bossId || ''),
         encryptBossId: normalizeText(oldBoss.encryptBossId || oldBoss.peerKey || ''),
         jobId: normalizeText(oldBoss.jobId || ''),
-        encryptJobId: normalizeText(oldBoss.encryptJobId || ''),
         lastMsgId: normalizeText(oldBoss.lastMsgId || oldBoss.lastMessageInfo?.msgId || '')
       };
       // Keep legacy securityId only for record-key compatibility. Sending never reads it.
       delete normalized.boss.securityId;
+      delete normalized.boss.bossSecurityId;
+      delete normalized.boss.bossJobSecurityId;
+      delete normalized.boss.uploadSecurityId;
+      delete normalized.boss.encryptJobId;
     }
     normalized.recordKey = makeRecordKey(normalized);
     return normalized;
@@ -102,6 +163,11 @@
     displayRecordDate,
     communicationDate,
     makeRecordKey,
-    normalizeStoredRecord
+    normalizeStoredRecord,
+    normalizeStringList,
+    normalizeMultilineText,
+    normalizeJobRef,
+    normalizeJobInfo,
+    isCompleteJobInfo
   };
 })();

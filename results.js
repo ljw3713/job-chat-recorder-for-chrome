@@ -4,6 +4,7 @@ const tableBox = document.getElementById('tableBox');
 const copyTableBtn = document.getElementById('copyTableBtn');
 const copyJsonBtn = document.getElementById('copyJsonBtn');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+const updateDetailsBtn = document.getElementById('updateDetailsBtn');
 const downloadJsonBtn = document.getElementById('downloadJsonBtn');
 const todayOnly = document.getElementById('todayOnly');
 const sourceFilter = document.getElementById('sourceFilter');
@@ -16,6 +17,12 @@ const sortBy = document.getElementById('sortBy');
 const pageHeading = document.getElementById('pageHeading');
 const statusBox = document.getElementById('statusBox');
 const statusText = document.getElementById('statusText');
+const syncCategoryProgress = document.getElementById('syncCategoryProgress');
+const communicationProgressText = document.getElementById('communicationProgressText');
+const communicationProgressBar = document.getElementById('communicationProgressBar');
+const jobDetailProgressText = document.getElementById('jobDetailProgressText');
+const jobDetailProgressBar = document.getElementById('jobDetailProgressBar');
+const syncRefreshNote = document.getElementById('syncRefreshNote');
 const saveBtn = document.getElementById('saveBtn');
 const overviewBtn = document.getElementById('overviewBtn');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
@@ -23,6 +30,10 @@ const ignoreSelectedBtn = document.getElementById('ignoreSelectedBtn');
 const ignoredRecordsBtn = document.getElementById('ignoredRecordsBtn');
 const cancelSyncBtn = document.getElementById('cancelSyncBtn');
 const resumeSyncBtn = document.getElementById('resumeSyncBtn');
+const resumeInsertBox = document.getElementById('resumeInsertBox');
+const resumeUpdateBox = document.getElementById('resumeUpdateBox');
+const resumeInsert = document.getElementById('resumeInsert');
+const resumeUpdate = document.getElementById('resumeUpdate');
 const pageHint = document.getElementById('pageHint');
 const syncRateBox = document.getElementById('syncRateBox');
 const syncRateUnit = document.getElementById('syncRateUnit');
@@ -49,13 +60,30 @@ const sendMessageSummary = document.getElementById('sendMessageSummary');
 const sendMessageTargets = document.getElementById('sendMessageTargets');
 const sendMessageLog = document.getElementById('sendMessageLog');
 const queryInput = document.getElementById('queryInput');
+const jobInfoCard = document.getElementById('jobInfoCard');
+const updateDetailsModal = document.getElementById('updateDetailsModal');
+const closeUpdateDetailsModalBtn = document.getElementById('closeUpdateDetailsModalBtn');
+const updateDetailsTitle = document.getElementById('updateDetailsTitle');
+const updateDetailsSummary = document.getElementById('updateDetailsSummary');
+const updateDetailsRate = document.getElementById('updateDetailsRate');
+const updateDetailsRetryDelay = document.getElementById('updateDetailsRetryDelay');
+const updateDetailsRetryCount = document.getElementById('updateDetailsRetryCount');
+const startUpdateDetailsBtn = document.getElementById('startUpdateDetailsBtn');
+const updateDetailsProgressBar = document.getElementById('updateDetailsProgressBar');
+const updateDetailsRefreshNote = document.getElementById('updateDetailsRefreshNote');
+const updateDetailsTargets = document.getElementById('updateDetailsTargets');
+const updateDetailsLog = document.getElementById('updateDetailsLog');
 
 const pageParams = new URLSearchParams(location.search);
 const mode = pageParams.get('mode') === 'sync' ? 'sync' : 'overview';
-const sendLogEnabled = pageParams.get('log') === 'enable';
+const runtimeConfig = globalThis.JobChatRuntimeConfig || {
+  enableDebugLog: false,
+  resultsPagePath: (targetMode) => `results.html?mode=${targetMode === 'sync' ? 'sync' : 'overview'}`
+};
+const sendLogEnabled = Boolean(runtimeConfig.enableDebugLog) && pageParams.get('log') !== 'disable';
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
-const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey } = globalThis.JobChatRecords;
+const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey, normalizeJobRef, normalizeJobInfo, isCompleteJobInfo } = globalThis.JobChatRecords;
 const ResultsDb = globalThis.JobChatResultsDb;
 
 let latestData = null;
@@ -69,9 +97,22 @@ let queryTimer = null;
 let sendRunning = false;
 let sendStatuses = new Map();
 let sendLogs = [];
+let detailsUpdating = false;
+let jobInfoHideTimer = null;
+let detailRefreshRecords = [];
+let detailRefreshStatuses = new Map();
+let detailRefreshLogs = [];
+let detailRefreshRequestLogs = [];
+let detailRefreshJobDetailStats = null;
+let detailRefreshRunId = null;
+let detailRefreshCountdownTimer = null;
+let jobDetailNotSyncedOnly = false;
+let lastOverviewSelectedRecordKey = '';
+let activeSelectionAction = '';
 
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者', '状态', '原消息'];
-const exportHeaders = ['唯一索引id', ...tableHeaders];
+const tableExportHeaders = ['唯一索引id', ...tableHeaders];
+const csvExportHeaders = [...tableExportHeaders, '内部数据'];
 
 function normalizeMessageStatus(value) {
   const text = normalizeText(value);
@@ -123,8 +164,14 @@ function normalizeRecord(record, index) {
     messageStatus: inferMessageStatus(record),
     note: normalizeText(record.note || ''),
     applicationDate,
-    updatedDate: normalizeText(record.updatedDate || updatedDate)
+    updatedDate: normalizeText(record.updatedDate || updatedDate),
+    jobRef: normalizeJobRef(record.jobRef),
+    jobInfo: normalizeJobInfo(record.jobInfo),
+    companyKey: normalizeText(record.companyKey || '')
   };
+  delete normalized.bossJobSecurityId;
+  delete normalized.externalJobId;
+  delete normalized.jobDetailAccessToken;
   if (normalized.siteKey === 'boss' || normalized.sourceName === 'BOSS直聘') {
     const boss = normalized.boss || {};
     normalized.boss = {
@@ -133,9 +180,12 @@ function normalizeRecord(record, index) {
       friendId: normalizeText(boss.friendId || ''),
       peerKey: normalizeText(boss.peerKey || boss.encryptBossId || boss.encryptFriendId || ''),
       chatSecurityId: normalizeText(boss.chatSecurityId || boss.securityId || ''),
-      uploadSecurityId: normalizeText(boss.uploadSecurityId || ''),
       friendSource: boss.friendSource ?? ''
     };
+    delete normalized.boss.bossSecurityId;
+    delete normalized.boss.bossJobSecurityId;
+    delete normalized.boss.uploadSecurityId;
+    delete normalized.boss.encryptJobId;
   }
   normalized.recordKey = makeRecordKey(normalized);
   return normalized;
@@ -164,13 +214,13 @@ function configurePageMode() {
     if (requestLogsBtn) requestLogsBtn.style.display = '';
     if (importCsvBtn) importCsvBtn.style.display = 'none';
     overviewBtn.textContent = '查看总记录';
-    pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。岗位和备注列可双击编辑。';
+    pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。备注列可双击编辑，岗位列可悬浮查看详情。';
   } else {
     saveBtn.style.display = 'none';
     if (requestLogsBtn) requestLogsBtn.style.display = 'none';
     if (importCsvBtn) importCsvBtn.style.display = '';
     overviewBtn.textContent = '刷新总览';
-    pageHint.textContent = '记录总览页：显示所有已保存记录，可筛选、排序、批量删除、导出当前页面结果。岗位和备注列可双击编辑。';
+    pageHint.textContent = '';
     if (sendMessageBtn) sendMessageBtn.style.display = '';
   }
   if (mode === 'sync' && sendMessageBtn) sendMessageBtn.style.display = 'none';
@@ -208,9 +258,14 @@ function updateSyncButtons() {
   const completed = Boolean(latestData?.syncSummary?.completed);
 
   if (syncRateBox) syncRateBox.style.display = isSync && isSupported ? '' : 'none';
-  if (startSyncBtn) startSyncBtn.style.display = isSync && isSupported && isReady ? '' : 'none';
+  const showStart = isSync && isSupported && isReady;
+  if (startSyncBtn) startSyncBtn.style.display = showStart ? '' : 'none';
   cancelSyncBtn.style.display = isSync && isSupported && isLoading ? '' : 'none';
-  resumeSyncBtn.style.display = isSync && isSupported && interrupted && !isLoading && !completed ? '' : 'none';
+  const showResume = isSync && isSupported && interrupted && !isLoading && !completed;
+  resumeSyncBtn.style.display = showResume ? '' : 'none';
+  const showSyncSelection = showStart || showResume;
+  if (resumeInsertBox) resumeInsertBox.style.display = showSyncSelection ? 'inline-flex' : 'none';
+  if (resumeUpdateBox) resumeUpdateBox.style.display = showSyncSelection ? 'inline-flex' : 'none';
 }
 
 function progressMessage(status) {
@@ -224,11 +279,46 @@ function progressMessage(status) {
   return status?.message || '正在提取沟通记录...';
 }
 
+function categoryProgressValue(category) {
+  const completed = Math.max(0, Number(category?.completed || 0));
+  const total = Math.max(0, Number(category?.total || 0));
+  return {
+    completed,
+    total,
+    percent: total ? Math.min(100, Math.round(completed / total * 100)) : 100
+  };
+}
+
+function renderSyncCategoryProgress(status) {
+  if (!syncCategoryProgress) return;
+  const categories = status?.progressCategories;
+  const shouldShow = mode === 'sync'
+    && status?.siteKey === 'boss'
+    && categories
+    && (status?.state === 'loading' || status?.state === 'ready');
+  syncCategoryProgress.style.display = shouldShow ? '' : 'none';
+  if (!shouldShow) return;
+  const communication = categoryProgressValue(categories.communication);
+  const jobDetail = categoryProgressValue(categories.jobDetail);
+  communicationProgressText.textContent = communication.total
+    ? `${communication.completed} / ${communication.total}`
+    : '无需同步';
+  jobDetailProgressText.textContent = jobDetail.total
+    ? `${jobDetail.completed} / ${jobDetail.total}`
+    : '无需同步';
+  communicationProgressBar.style.width = `${communication.percent}%`;
+  jobDetailProgressBar.style.width = `${jobDetail.percent}%`;
+  if (syncRefreshNote) {
+    syncRefreshNote.style.display = status?.jobDetailRequired || jobDetail.total > 0 ? '' : 'none';
+  }
+}
+
 function setStatus(state, message) {
   if (!statusBox || !statusText) return;
   if (!state || state === 'done') {
     statusBox.className = 'status-card';
     statusText.textContent = '';
+    if (syncCategoryProgress) syncCategoryProgress.style.display = 'none';
     return;
   }
   statusBox.className = `status-card show ${state === 'error' ? 'error' : state === 'ready' ? 'ready' : ''}`;
@@ -246,6 +336,7 @@ function renderReady(status) {
   configureTodayOnly();
   const message = status?.message || '已获取待同步列表，请点击“同步”。';
   setStatus('ready', message);
+  renderSyncCategoryProgress({ ...status, state: 'ready' });
   updateSyncButtons();
   tableBox.innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
   jsonBox.textContent = JSON.stringify({
@@ -266,6 +357,7 @@ function renderLoading(status) {
   extractionStatus = status || extractionStatus;
   configureTodayOnly();
   setStatus('loading', progressMessage(status));
+  renderSyncCategoryProgress({ ...status, state: 'loading' });
   updateSyncButtons();
   if (!allRecords.length) {
     tableBox.innerHTML = '<div class="empty">正在加载数据，请稍候...</div>';
@@ -307,6 +399,7 @@ function applyFilters() {
   if (company) records = records.filter((r) => r.companyName === company);
   const messageStatus = messageStatusFilter?.value || '';
   if (messageStatus) records = records.filter((r) => (normalizeMessageStatus(r.messageStatus) || '0') === messageStatus);
+  if (jobDetailNotSyncedOnly) records = records.filter((record) => !isCompleteJobInfo(record));
   const words = queryValue.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) records = records.filter((record) => {
     const searchable = [record.companyName, record.jobName, record.recruiterName, record.recruiterTitle, record.lastMessage].join(' ').toLocaleLowerCase();
@@ -338,7 +431,10 @@ function toOutputRows() {
     note: normalizeText(r.note),
     messageStatus: messageStatusText(r.messageStatus),
     recruiterInfo: recruiterInfo(r),
-    lastMessage: normalizeText(r.lastMessage)
+    lastMessage: normalizeText(r.lastMessage),
+    jobRef: normalizeJobRef(r.jobRef),
+    companyKey: normalizeText(r.companyKey || ''),
+    jobInfo: normalizeJobInfo(r.jobInfo)
   }));
 }
 
@@ -365,12 +461,16 @@ function updateMeta() {
   const summary = latestData?.syncSummary;
   const updatedMsg = summary?.updatedMsg ?? summary?.updated ?? 0;
   const syncText = summary?.saved ? ` · 保存结果：新增 ${summary.inserted || 0} 条，更新消息 ${updatedMsg} 条` : '';
+  const jobDetail = summary?.jobDetail;
+  const jobDetailText = jobDetail && Number(jobDetail.requested || 0)
+    ? ` · 岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止；可在总览页手动更新）' : ''}`
+    : '';
   const title = mode === 'sync' ? (latestData?.siteTitle || '同步结果') : '招聘沟通记录总览';
   pageHeading.textContent = title;
   document.title = title;
 
   if (mode === 'sync') {
-    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}`;
+    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${jobDetailText.replace(/(\d+)/g, '<strong>$1</strong>')}`;
     return;
   }
 
@@ -384,12 +484,38 @@ function updateJsonBox() {
 
 function toTsv(includeHeader = true) {
   const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.messageStatus, r.lastMessage]);
-  return ResultsDb.tsv(exportHeaders, rows, includeHeader);
+  return ResultsDb.tsv(tableExportHeaders, rows, includeHeader);
 }
 
 function toCsv() {
-  const rows = toOutputRows().map((r) => [r.recordKey, r.sourceName, r.companyName, r.jobName, r.applicationDate, r.updatedDate, r.note, r.recruiterInfo, r.messageStatus, r.lastMessage]);
-  return ResultsDb.csv(exportHeaders, rows);
+  const rows = currentRecords.map((record) => {
+    const output = {
+      recordKey: normalizeText(record.recordKey || makeRecordKey(record)),
+      sourceName: normalizeText(record.sourceName),
+      companyName: normalizeText(record.companyName),
+      jobName: normalizeText(record.jobName),
+      applicationDate: exportDateTime(record.applicationDate),
+      updatedDate: exportDateTime(record.updatedDate),
+      note: normalizeText(record.note),
+      recruiterInfo: recruiterInfo(record),
+      messageStatus: messageStatusText(record.messageStatus),
+      lastMessage: normalizeText(record.lastMessage)
+    };
+    return [
+      output.recordKey,
+      output.sourceName,
+      output.companyName,
+      output.jobName,
+      output.applicationDate,
+      output.updatedDate,
+      output.note,
+      output.recruiterInfo,
+      output.messageStatus,
+      output.lastMessage,
+      ResultsDb.csvInternalData(record)
+    ];
+  });
+  return ResultsDb.csv(csvExportHeaders, rows);
 }
 
 async function persistCurrentRecords() {
@@ -524,7 +650,6 @@ function saveEditableValue(recordKey, field, value) {
   const record = allRecords.find((item) => item.recordKey === recordKey);
   if (!record) return;
   record[field] = field === 'messageStatus' ? normalizeMessageStatus(value) : normalizeText(value);
-  if (field === 'jobName') record.recordKey = makeRecordKey(record);
   persistCurrentRecords();
   renderTable();
 }
@@ -532,6 +657,7 @@ function saveEditableValue(recordKey, field, value) {
 function bindEditableCells() {
   tableBox.querySelectorAll('.editable').forEach((cell) => {
     cell.addEventListener('dblclick', () => {
+      hideJobInfoCard();
       cell.dataset.original = cell.textContent;
       cell.contentEditable = 'true';
       cell.classList.add('editing');
@@ -558,17 +684,35 @@ function bindEditableCells() {
 
   tableBox.querySelectorAll('.row-select').forEach((checkbox) => {
     checkbox.checked = selectedKeys.has(checkbox.value);
-    checkbox.addEventListener('change', () => {
-      if (checkbox.checked) selectedKeys.add(checkbox.value);
-      else selectedKeys.delete(checkbox.value);
+    checkbox.addEventListener('click', (event) => { checkbox.dataset.shiftKey = event.shiftKey ? '1' : ''; });
+    checkbox.addEventListener('change', (event) => {
+      activeSelectionAction = '';
+      const recordKey = checkbox.value;
+      const canRangeSelect = mode === 'overview' && (event.shiftKey || checkbox.dataset.shiftKey === '1') && lastOverviewSelectedRecordKey;
+      const startIndex = canRangeSelect ? currentRecords.findIndex((record) => record.recordKey === lastOverviewSelectedRecordKey) : -1;
+      const endIndex = currentRecords.findIndex((record) => record.recordKey === recordKey);
+      if (startIndex >= 0 && endIndex >= 0) {
+        const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+        currentRecords.slice(from, to + 1).forEach((record) => {
+          if (checkbox.checked) selectedKeys.add(record.recordKey);
+          else selectedKeys.delete(record.recordKey);
+        });
+      } else if (checkbox.checked) {
+        selectedKeys.add(recordKey);
+      } else {
+        selectedKeys.delete(recordKey);
+      }
+      if (mode === 'overview') lastOverviewSelectedRecordKey = recordKey;
       updateSelectAllCheckbox();
       updateDeleteButton();
+      if (startIndex >= 0 && endIndex >= 0) renderTable();
     });
   });
 
   const selectAll = document.getElementById('selectAllRows');
   if (selectAll) {
     selectAll.addEventListener('change', () => {
+      activeSelectionAction = '';
       currentRecords.forEach((record) => {
         if (selectAll.checked) selectedKeys.add(record.recordKey);
         else selectedKeys.delete(record.recordKey);
@@ -588,12 +732,28 @@ function updateSelectAllCheckbox() {
   selectAll.indeterminate = selected > 0 && selected < total;
 }
 
+function bindJobDetailNotSyncedFilter() {
+  const checkbox = document.getElementById('jobDetailNotSyncedFilter');
+  if (!checkbox) return;
+  checkbox.checked = jobDetailNotSyncedOnly;
+  checkbox.addEventListener('change', () => {
+    jobDetailNotSyncedOnly = checkbox.checked;
+    selectedKeys.clear();
+    renderTable();
+  });
+}
+
 function updateDeleteButton() {
   if (!deleteSelectedBtn) return;
-  deleteSelectedBtn.textContent = selectedKeys.size ? `删除选中（${selectedKeys.size}）` : '删除选中';
+  const showCount = (action) => selectedKeys.size && (mode !== 'overview' || !activeSelectionAction || activeSelectionAction === action);
+  deleteSelectedBtn.textContent = showCount('delete') ? `删除选中（${selectedKeys.size}）` : '删除选中';
   deleteSelectedBtn.disabled = selectedKeys.size === 0;
+  if (updateDetailsBtn) {
+    updateDetailsBtn.textContent = detailsUpdating ? '查看同步进度' : (showCount('update') ? `更新选中（${selectedKeys.size}）` : '更新选中');
+    updateDetailsBtn.disabled = !detailsUpdating && selectedKeys.size === 0;
+  }
   if (ignoreSelectedBtn) {
-    ignoreSelectedBtn.textContent = selectedKeys.size ? `忽略选中（${selectedKeys.size}）` : '忽略选中';
+    ignoreSelectedBtn.textContent = showCount('ignore') ? `忽略选中（${selectedKeys.size}）` : '忽略选中';
     ignoreSelectedBtn.disabled = selectedKeys.size === 0;
   }
   if (ignoredRecordsBtn) {
@@ -601,9 +761,247 @@ function updateDeleteButton() {
     ignoredRecordsBtn.textContent = ignoredRecords.length ? `忽略记录（${ignoredRecords.length}）` : '忽略记录';
   }
   if (sendMessageBtn) {
-    sendMessageBtn.textContent = selectedKeys.size ? `发送信息（${selectedKeys.size}）` : '发送信息';
+    sendMessageBtn.textContent = showCount('send') ? `发送信息（${selectedKeys.size}）` : '发送信息';
     sendMessageBtn.disabled = selectedKeys.size === 0 || sendRunning;
   }
+}
+
+function showJobInfoCard(target, record) {
+  if (!jobInfoCard) return;
+  clearTimeout(jobInfoHideTimer);
+  const info = normalizeJobInfo(record.jobInfo);
+  const empty = !info.skills.length && !info.description;
+  const status = info.fetchStatus === 'failed'
+    ? `获取失败：${info.errorMessage || '请稍后重试。'}`
+    : (info.errorMessage || (empty ? '暂无岗位详情，可勾选后点击“更新详情”。' : ''));
+  const summary = [info.salary, info.location, info.experience, info.education].filter(Boolean).join(' · ');
+  jobInfoCard.innerHTML = `<h3>${escapeHtml(info.title || record.jobName || '岗位详情')}</h3><div class="job-info-meta">${escapeHtml(summary)}</div><div class="keywords">${info.skills.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join('')}</div><p class="detail">${escapeHtml(info.description || status)}</p><div class="job-info-meta">${escapeHtml(info.address ? `地址：${info.address}` : '')}${escapeHtml(info.fetchedAt ? ` 最近获取：${info.fetchedAt}` : '')}</div>`;
+  const rect = target.getBoundingClientRect();
+  jobInfoCard.classList.add('show');
+  const cardRect = jobInfoCard.getBoundingClientRect();
+  const left = Math.max(12, Math.min(window.innerWidth - cardRect.width - 12, rect.left + rect.width / 2));
+  const top = rect.bottom + cardRect.height <= window.innerHeight ? rect.bottom : Math.max(12, rect.top - cardRect.height);
+  jobInfoCard.style.left = `${left}px`;
+  jobInfoCard.style.top = `${top}px`;
+}
+
+function closeJobInfoCard() {
+  clearTimeout(jobInfoHideTimer);
+  jobInfoCard?.classList.remove('show');
+}
+
+function scheduleJobInfoCardHide() {
+  clearTimeout(jobInfoHideTimer);
+  jobInfoHideTimer = setTimeout(() => jobInfoCard?.classList.remove('show'), 220);
+}
+
+function hideJobInfoCard() { closeJobInfoCard(); }
+
+if (jobInfoCard) {
+  jobInfoCard.addEventListener('mouseenter', () => clearTimeout(jobInfoHideTimer));
+  jobInfoCard.addEventListener('mouseleave', scheduleJobInfoCardHide);
+  jobInfoCard.addEventListener('focusin', () => clearTimeout(jobInfoHideTimer));
+  jobInfoCard.addEventListener('focusout', scheduleJobInfoCardHide);
+}
+
+if (updateDetailsLog) {
+  updateDetailsLog.addEventListener('keydown', (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a') return;
+    event.preventDefault();
+    const range = document.createRange();
+    range.selectNodeContents(updateDetailsLog);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+}
+
+function detailRefreshStatusText(status) {
+  if (status?.status === '同步中') return '同步中';
+  if (status?.status === '重试中') return '重试中';
+  if (status?.status === '成功') return '成功';
+  if (status?.status === '失败') return '失败';
+  if (status?.status === '已停止') return '已停止';
+  return '等待同步';
+}
+
+function detailRefreshErrorText(status) {
+  const error = status?.error || '';
+  if (status?.status !== '重试中' || !status.retryAt) return error;
+  const remaining = Math.max(0, Math.ceil((Number(status.retryAt) - Date.now()) / 1000));
+  return error.replace(/剩余\s*\d+\s*秒/, `剩余 ${remaining} 秒`);
+}
+
+function updateDetailRefreshCountdownDisplay() {
+  if (!updateDetailsModal?.classList.contains('show')) return;
+  updateDetailsTargets.querySelectorAll('.detail-refresh-status[data-key]').forEach((cell) => {
+    const status = detailRefreshStatuses.get(cell.dataset.key) || {};
+    if (status.status === '重试中') cell.textContent = detailRefreshStatusText(status);
+  });
+  updateDetailsTargets.querySelectorAll('.detail-refresh-error[data-key]').forEach((cell) => {
+    const status = detailRefreshStatuses.get(cell.dataset.key) || {};
+    if (status.status === '重试中') cell.textContent = detailRefreshErrorText(status);
+  });
+}
+
+function updateDetailRefreshCountdownTimer() {
+  const needsTimer = detailsUpdating && [...detailRefreshStatuses.values()].some((status) => status.status === '重试中');
+  if (needsTimer && !detailRefreshCountdownTimer) {
+    detailRefreshCountdownTimer = setInterval(updateDetailRefreshCountdownDisplay, 1000);
+  } else if (!needsTimer && detailRefreshCountdownTimer) {
+    clearInterval(detailRefreshCountdownTimer);
+    detailRefreshCountdownTimer = null;
+  }
+}
+
+function renderUpdateDetailsModal() {
+  if (!updateDetailsModal) return;
+  const total = detailRefreshRecords.length;
+  const statuses = detailRefreshRecords.map((record) => detailRefreshStatuses.get(record.recordKey) || {});
+  const success = statuses.filter((status) => status.status === '成功').length;
+  const failed = statuses.filter((status) => status.status === '失败').length;
+  const completed = success + failed;
+  const jobDetail = detailRefreshJobDetailStats;
+  const jobDetailText = jobDetail
+    ? `<span>岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止）' : ''}</span>`
+    : '';
+  updateDetailsTitle.textContent = `更新岗位详情（${total}）`;
+  updateDetailsSummary.innerHTML = `<span>待同步总数：${total} 条</span><span class="refresh-counts"><span>已同步：${success} 条</span><span>失败：${failed} 条</span>${jobDetailText}</span>`;
+  updateDetailsProgressBar.style.width = `${total ? Math.round(completed / total * 100) : 0}%`;
+  if (updateDetailsRefreshNote) updateDetailsRefreshNote.style.display = total ? '' : 'none';
+  [updateDetailsRate, updateDetailsRetryDelay, updateDetailsRetryCount].forEach((input) => {
+    if (input) input.disabled = detailsUpdating;
+  });
+  startUpdateDetailsBtn.textContent = detailsUpdating ? '暂停' : '同步';
+  updateDetailsTargets.innerHTML = `<table><thead><tr><th>公司</th><th>岗位</th><th>招聘者</th><th>同步状态</th><th>说明</th></tr></thead><tbody>${detailRefreshRecords.map((record) => {
+    const status = detailRefreshStatuses.get(record.recordKey) || {};
+    return `<tr><td>${escapeHtml(record.companyName)}</td><td>${escapeHtml(record.jobName)}</td><td>${escapeHtml(recruiterInfo(record))}</td><td class="detail-refresh-status" data-key="${escapeHtml(record.recordKey)}">${escapeHtml(detailRefreshStatusText(status))}</td><td class="detail-refresh-error" data-key="${escapeHtml(record.recordKey)}">${escapeHtml(detailRefreshErrorText(status))}</td></tr>`;
+  }).join('')}</tbody></table>`;
+  if (updateDetailsLog) {
+    updateDetailsLog.style.display = sendLogEnabled ? '' : 'none';
+    const rawLogs = detailRefreshRequestLogs.map(formatRequestLog);
+    const summaryLogs = detailRefreshLogs.map((entry) => `[${String(entry.time || '').slice(11, 19)}] ${entry.message || JSON.stringify(entry)}`);
+    updateDetailsLog.textContent = rawLogs.length || summaryLogs.length ? [...summaryLogs, ...rawLogs].join('\n\n') : '暂无同步日志。';
+    updateDetailsLog.scrollTop = updateDetailsLog.scrollHeight;
+  }
+  updateDetailRefreshCountdownTimer();
+}
+
+async function openUpdateDetailsModal() {
+  if (detailsUpdating && detailRefreshRecords.length) {
+    renderUpdateDetailsModal();
+    updateDetailsModal.classList.add('show');
+    return;
+  }
+  const records = selectedRecords();
+  if (!records.length) return;
+  if (records.some((record) => record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘')) {
+    alert('当前仅支持更新 BOSS直聘记录；猎聘岗位详情暂不支持。');
+    return;
+  }
+  const selectedRecordKeys = new Set(records.map((record) => record.recordKey));
+  const isExistingBatch = detailRefreshRecords.length === records.length
+    && detailRefreshRecords.every((record) => selectedRecordKeys.has(record.recordKey));
+  if (isExistingBatch) {
+    const latestByKey = new Map(records.map((record) => [record.recordKey, record]));
+    detailRefreshRecords = detailRefreshRecords.map((record) => latestByKey.get(record.recordKey) || record);
+  } else {
+    detailRefreshRecords = records;
+    detailRefreshStatuses = new Map(records.map((record) => [record.recordKey, { status: '等待同步' }]));
+    detailRefreshJobDetailStats = null;
+  }
+  const store = await chrome.storage.local.get([
+    'jobChatJobDetailRefreshRate',
+    'jobChatJobDetailRetryDelay',
+    'jobChatJobDetailRetryCount',
+    'jobChatRefreshLogs',
+    'jobChatRequestLogs'
+  ]);
+  detailRefreshLogs = sendLogEnabled && Array.isArray(store.jobChatRefreshLogs) ? store.jobChatRefreshLogs : [];
+  detailRefreshRequestLogs = sendLogEnabled && Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
+  updateDetailsRate.value = String(Math.max(1, Math.min(3600, Number(store.jobChatJobDetailRefreshRate || 20))));
+  updateDetailsRetryDelay.value = String(Math.max(1, Math.min(3600, Math.floor(Number(store.jobChatJobDetailRetryDelay || 60)))));
+  updateDetailsRetryCount.value = String(Math.max(1, Math.min(10, Math.floor(Number(store.jobChatJobDetailRetryCount || 3)))));
+  renderUpdateDetailsModal();
+  updateDetailsModal.classList.add('show');
+}
+
+function markUnfinishedDetailRefreshFailed(errorMessage) {
+  detailRefreshRecords.forEach((record) => {
+    const status = detailRefreshStatuses.get(record.recordKey) || {};
+    if (['成功', '失败', '已停止'].includes(status.status)) return;
+    detailRefreshStatuses.set(record.recordKey, { status: '失败', error: errorMessage });
+  });
+}
+
+async function startOrStopDetailRefresh() {
+  if (detailsUpdating) {
+    detailsUpdating = false;
+    detailRefreshRunId = null;
+    detailRefreshStatuses.forEach((status, recordKey) => {
+      if (status.status === '重试中') {
+        detailRefreshStatuses.set(recordKey, { status: '失败', error: '已手动暂停，当前重试已取消。' });
+      } else if (status.status === '同步中' || status.status === '已停止') {
+        detailRefreshStatuses.set(recordKey, { status: '等待同步', error: '' });
+      }
+    });
+    updateDetailRefreshCountdownTimer();
+    renderUpdateDetailsModal();
+    updateDeleteButton();
+    chrome.runtime.sendMessage({ type: 'JOB_CHAT_STOP_REFRESH' }).catch(() => {});
+    return;
+  }
+  const retryRecords = detailRefreshRecords.filter((record) => detailRefreshStatuses.get(record.recordKey)?.status !== '成功');
+  if (!retryRecords.length) return;
+  const rate = Math.max(1, Math.min(3600, Math.floor(Number(updateDetailsRate.value || 20))));
+  const retryDelaySeconds = Math.max(1, Math.min(3600, Math.floor(Number(updateDetailsRetryDelay.value || 60))));
+  const retryCount = Math.max(1, Math.min(10, Math.floor(Number(updateDetailsRetryCount.value || 3))));
+  updateDetailsRate.value = String(rate);
+  updateDetailsRetryDelay.value = String(retryDelaySeconds);
+  updateDetailsRetryCount.value = String(retryCount);
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  detailRefreshRunId = runId;
+  detailsUpdating = true;
+  retryRecords.forEach((record) => detailRefreshStatuses.set(record.recordKey, { status: '等待同步', error: '' }));
+  detailRefreshLogs = [];
+  detailRefreshRequestLogs = [];
+  detailRefreshJobDetailStats = null;
+  renderUpdateDetailsModal();
+  updateDeleteButton();
+  Promise.all([
+    chrome.storage.local.set({
+      jobChatJobDetailRefreshRate: rate,
+      jobChatJobDetailRetryDelay: retryDelaySeconds,
+      jobChatJobDetailRetryCount: retryCount
+    }),
+    chrome.storage.local.set({ jobChatRefreshLogs: [], jobChatRequestLogs: [] })
+  ]).then(() => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_SELECTED', recordKeys: retryRecords.map((record) => record.recordKey), storageScope: mode === 'sync' ? 'pending' : 'total', rate, retryDelaySeconds, retryCount, debugLog: sendLogEnabled, runId }))
+    .then(async (response) => {
+      if (detailRefreshRunId !== runId) return;
+      detailRefreshJobDetailStats = response?.jobDetail || null;
+      (response?.results || []).forEach((result) => {
+        detailRefreshStatuses.set(result.recordKey, {
+          status: result.ok ? '成功' : '失败',
+          error: result.error || ''
+        });
+      });
+      if (!response?.ok) {
+        markUnfinishedDetailRefreshFailed(response?.error || '更新详情失败。');
+      }
+      detailsUpdating = false;
+      updateDetailRefreshCountdownTimer();
+      renderUpdateDetailsModal();
+      updateDeleteButton();
+      await loadAndRenderLatest();
+    })
+    .catch((error) => {
+      if (detailRefreshRunId !== runId) return;
+      detailsUpdating = false;
+      updateDetailRefreshCountdownTimer();
+      markUnfinishedDetailRefreshFailed(error?.message || String(error));
+      renderUpdateDetailsModal();
+      updateDeleteButton();
+    });
 }
 
 function selectedRecords() { return allRecords.filter((record) => selectedKeys.has(record.recordKey)); }
@@ -644,33 +1042,37 @@ function renderTable() {
   updateMeta();
   updateJsonBox();
   updateDeleteButton();
+  const tableHeader = `
+    <thead>
+      <tr>
+        <th class="select"><input id="selectAllRows" type="checkbox" title="全选当前页面" /></th>
+        <th class="source">来源</th>
+        <th class="company">公司</th>
+        <th class="job">岗位 <label class="job-sync-filter"><input id="jobDetailNotSyncedFilter" type="checkbox" /> 未同步</label></th>
+        <th class="date">申请时间</th>
+        <th class="date">更新时间</th>
+        <th class="note">备注</th>
+        <th class="recruiter">招聘者</th>
+        <th class="status">状态</th>
+        <th class="message">原消息</th>
+      </tr>
+    </thead>`;
   if (!records.length) {
-    tableBox.innerHTML = '<div class="empty">没有符合条件的记录。</div>';
+    tableBox.innerHTML = `<table>${tableHeader}<tbody><tr><td class="empty" colspan="10">没有符合条件的记录。</td></tr></tbody></table>`;
+    bindEditableCells();
+    bindJobDetailNotSyncedFilter();
     return;
   }
   tableBox.innerHTML = `
     <table>
-      <thead>
-        <tr>
-          <th class="select"><input id="selectAllRows" type="checkbox" title="全选当前页面" /></th>
-          <th class="source">来源</th>
-          <th class="company">公司</th>
-          <th class="job">岗位</th>
-          <th class="date">申请时间</th>
-          <th class="date">更新时间</th>
-          <th class="note">备注</th>
-          <th class="recruiter">招聘者</th>
-          <th class="status">状态</th>
-          <th class="message">原消息</th>
-        </tr>
-      </thead>
+      ${tableHeader}
       <tbody>
         ${records.map((r) => `
           <tr>
             <td class="select-cell"><input class="row-select" type="checkbox" value="${escapeHtml(r.recordKey)}" /></td>
             <td class="source-cell">${escapeHtml(r.sourceName)}</td>
             <td class="company-cell">${escapeHtml(r.companyName)}</td>
-            <td class="job-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="jobName" title="双击编辑岗位信息">${escapeHtml(r.jobName)}</td>
+            <td class="job-cell job-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看岗位详情">${escapeHtml(r.jobName)}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.applicationDate))}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.updatedDate))}</td>
             <td class="note-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="note" title="双击编辑备注">${escapeHtml(r.note || '')}</td>
@@ -681,6 +1083,15 @@ function renderTable() {
       </tbody>
     </table>`;
   bindEditableCells();
+  bindJobDetailNotSyncedFilter();
+  tableBox.querySelectorAll('.job-hover-target').forEach((target) => {
+    const record = allRecords.find((item) => item.recordKey === target.dataset.key);
+    if (!record) return;
+    target.addEventListener('mouseenter', () => showJobInfoCard(target, record));
+    target.addEventListener('mouseleave', scheduleJobInfoCardHide);
+    target.addEventListener('focus', () => showJobInfoCard(target, record));
+    target.addEventListener('blur', scheduleJobInfoCardHide);
+  });
 }
 
 async function loadAndRenderLatest() {
@@ -738,15 +1149,16 @@ async function loadAndRenderLatest() {
 
 async function importCsvFile(file) {
   const text = await file.text();
-  const imported = ResultsDb.rowsFromImportedCsv(text).map(normalizeRecord);
+  const imported = ResultsDb.rowsFromImportedCsv(text);
   if (!imported.length) throw new Error('CSV 中没有可导入的记录。');
   const byKey = new Map(allRecords.map((record) => [record.recordKey, record]));
   let inserted = 0;
   let updated = 0;
-  imported.forEach((record) => {
+  imported.forEach((rawRecord, index) => {
+    const record = normalizeRecord(rawRecord, index);
     if (byKey.has(record.recordKey)) updated += 1;
     else inserted += 1;
-    byKey.set(record.recordKey, { ...(byKey.get(record.recordKey) || {}), ...record });
+    byKey.set(record.recordKey, ResultsDb.mergeImportedRecord(byKey.get(record.recordKey), record));
   });
   allRecords = Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
   await persistCurrentRecords();
@@ -780,6 +1192,26 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (sendMessageModal?.classList.contains('show')) renderSendModal();
     updateDeleteButton();
   }
+  if (changes.jobChatRefreshProgress) {
+    const progress = changes.jobChatRefreshProgress.newValue || {};
+    if (detailsUpdating && detailRefreshRunId && progress.runId === detailRefreshRunId) {
+      if (progress.recordKey) detailRefreshStatuses.set(progress.recordKey, {
+        status: progress.status || '同步中',
+        error: progress.error || '',
+        remainingSeconds: Number(progress.remainingSeconds || 0),
+        retryAt: Number(progress.retryAt || 0)
+      });
+      if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
+    }
+  }
+  if (changes.jobChatRefreshLogs && sendLogEnabled) {
+    detailRefreshLogs = Array.isArray(changes.jobChatRefreshLogs.newValue) ? changes.jobChatRefreshLogs.newValue : [];
+    if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
+  }
+  if (changes.jobChatRequestLogs && sendLogEnabled) {
+    detailRefreshRequestLogs = Array.isArray(changes.jobChatRequestLogs.newValue) ? changes.jobChatRequestLogs.newValue : [];
+    if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
+  }
   if (changes.jobChatBossSendLogs) {
     if (sendLogEnabled) {
       sendLogs = Array.isArray(changes.jobChatBossSendLogs.newValue) ? changes.jobChatBossSendLogs.newValue : [];
@@ -812,7 +1244,7 @@ saveBtn.addEventListener('click', async () => {
 
 overviewBtn.addEventListener('click', async () => {
   if (mode === 'sync') {
-    await chrome.tabs.create({ url: chrome.runtime.getURL('results.html?mode=overview'), active: true });
+    await chrome.tabs.create({ url: chrome.runtime.getURL(runtimeConfig.resultsPagePath('overview')), active: true });
   } else {
     await loadAndRenderLatest();
   }
@@ -820,6 +1252,10 @@ overviewBtn.addEventListener('click', async () => {
 
 deleteSelectedBtn.addEventListener('click', async () => {
   if (!selectedKeys.size) return;
+  if (mode === 'overview') {
+    activeSelectionAction = 'delete';
+    updateDeleteButton();
+  }
   if (!confirm(`确认删除选中的 ${selectedKeys.size} 条记录？`)) return;
   allRecords = allRecords.filter((record) => !selectedKeys.has(record.recordKey));
   selectedKeys.clear();
@@ -828,8 +1264,42 @@ deleteSelectedBtn.addEventListener('click', async () => {
   renderTable();
 });
 
+if (updateDetailsBtn) updateDetailsBtn.addEventListener('click', () => {
+  if (mode === 'overview') {
+    activeSelectionAction = 'update';
+    updateDeleteButton();
+  }
+  openUpdateDetailsModal();
+});
+if (startUpdateDetailsBtn) startUpdateDetailsBtn.addEventListener('click', startOrStopDetailRefresh);
+function closeUpdateDetailsModal() {
+  if (detailsUpdating && !confirm('同步仍在进行，关闭弹窗不会停止同步。是否关闭？')) return;
+  updateDetailsModal?.classList.remove('show');
+  if (mode !== 'overview' || detailsUpdating) return;
+  detailRefreshRecords = [];
+  detailRefreshStatuses = new Map();
+  detailRefreshJobDetailStats = null;
+  detailRefreshRunId = null;
+  detailRefreshLogs = [];
+  detailRefreshRequestLogs = [];
+  activeSelectionAction = '';
+  selectedKeys.clear();
+  updateDetailRefreshCountdownTimer();
+  renderTable();
+}
+if (closeUpdateDetailsModalBtn) closeUpdateDetailsModalBtn.addEventListener('click', closeUpdateDetailsModal);
+if (updateDetailsModal) updateDetailsModal.addEventListener('click', (event) => {
+  if (event.target === updateDetailsModal) closeUpdateDetailsModal();
+});
+
 if (ignoreSelectedBtn) {
-  ignoreSelectedBtn.addEventListener('click', ignoreSelectedRecords);
+  ignoreSelectedBtn.addEventListener('click', () => {
+    if (mode === 'overview') {
+      activeSelectionAction = 'ignore';
+      updateDeleteButton();
+    }
+    ignoreSelectedRecords();
+  });
 }
 
 if (ignoredRecordsBtn) {
@@ -864,6 +1334,10 @@ if (requestLogsModal) {
 }
 
 if (sendMessageBtn) sendMessageBtn.addEventListener('click', async () => {
+  if (mode === 'overview') {
+    activeSelectionAction = 'send';
+    updateDeleteButton();
+  }
   sendStatuses = new Map();
   sendMessageText.value = '';
   sendMessageCount.textContent = '0 / 1000';
@@ -948,9 +1422,18 @@ if (syncRateLimit || syncRateUnit) {
 
 if (startSyncBtn) {
   startSyncBtn.addEventListener('click', async () => {
+    const includeInsert = Boolean(resumeInsert?.checked);
+    const includeUpdate = Boolean(resumeUpdate?.checked);
+    if (!includeInsert && !includeUpdate) {
+      alert('请至少选择“新增”或“更新”中的一项。');
+      return;
+    }
     startSyncBtn.disabled = true;
     await ResultsDb.saveSyncRateSettings(normalizeSyncRateSettings());
-    const response = await chrome.runtime.sendMessage({ type: 'START_PREPARED_SYNC' });
+    const response = await chrome.runtime.sendMessage({
+      type: 'START_PREPARED_SYNC',
+      syncSelection: { includeInsert, includeUpdate }
+    });
     if (!response?.ok) alert(response?.error || '同步失败');
     startSyncBtn.disabled = false;
   });
@@ -980,9 +1463,18 @@ if (cancelSyncBtn) {
 
 if (resumeSyncBtn) {
   resumeSyncBtn.addEventListener('click', async () => {
+    const includeInsert = Boolean(resumeInsert?.checked);
+    const includeUpdate = Boolean(resumeUpdate?.checked);
+    if (!includeInsert && !includeUpdate) {
+      alert('请至少选择“新增”或“更新”中的一项。');
+      return;
+    }
     resumeSyncBtn.disabled = true;
     resumeSyncBtn.textContent = '正在继续...';
-    const response = await chrome.runtime.sendMessage({ type: 'RESUME_CURRENT_SYNC' });
+    const response = await chrome.runtime.sendMessage({
+      type: 'RESUME_CURRENT_SYNC',
+      syncSelection: { includeInsert, includeUpdate }
+    });
     if (!response?.ok) alert(response?.error || '继续同步失败');
     resumeSyncBtn.disabled = false;
     resumeSyncBtn.textContent = '继续同步';

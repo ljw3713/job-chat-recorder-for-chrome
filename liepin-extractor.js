@@ -91,7 +91,7 @@
   }
 
   function liepinSyncMessage(synced, total, insertedCount, updatedMsgCount) {
-    return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，新增 ${insertedCount} 条，更新消息 ${updatedMsgCount} 条`;
+    return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，消息状态：新增 ${insertedCount} 条，更新 ${updatedMsgCount} 条`;
   }
 
   function liepinSyncSummary(insertedCount, updatedMsgCount) {
@@ -240,7 +240,7 @@
     });
   }
 
-  async function getFilteredContacts(imId) {
+  async function getFilteredContacts(imId, options = {}) {
     const contacts = filterLiepinRecentContacts(await fetchLiepinContacts(imId));
     const store = await chrome.storage.local.get(['jobChatPendingRecords', 'jobChatRecords']);
     const pending = store.jobChatPendingRecords;
@@ -252,11 +252,14 @@
     const pendingByKey = indexLiepinRecords(pendingRecords);
     const ignoredKeys = new Set();
     ignoredRecords.forEach((record) => addLiepinRecordKeys(ignoredKeys, record));
+    const includeInsert = options.syncSelection?.includeInsert !== false;
+    const includeUpdate = options.syncSelection?.includeUpdate !== false;
     const contactsToSync = contacts.filter((item) => {
       const keys = liepinItemKeys(item);
       if (keys.some((key) => ignoredKeys.has(key))) return false;
       const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
-      if (!existingRecord) return true;
+      if (!existingRecord) return includeInsert;
+      if (!includeUpdate) return false;
       const latestMsgId = normalizeText(item?.latestMsgId || '');
       const latestMsgChanged = Boolean(latestMsgId && liepinLatestMsgId(existingRecord) !== latestMsgId);
       const statusChanged = liepinMessageStatusFromRecord(existingRecord) !== liepinMessageStatusFromItem(item);
@@ -265,11 +268,11 @@
     return { contacts, contactsToSync, pendingRecords, savedByKey, pendingByKey };
   }
 
-  async function extractLiepinChatRecords() {
+  async function extractLiepinChatRecords(options = {}) {
     const imId = getLiepinImId();
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘，并刷新页面后重试。');
 
-    const { contactsToSync, pendingRecords, savedByKey, pendingByKey } = await getFilteredContacts(imId);
+    const { contactsToSync, pendingRecords, savedByKey, pendingByKey } = await getFilteredContacts(imId, options);
     const records = [...pendingRecords];
     const totalToSync = contactsToSync.length;
     let syncedCount = 0;
@@ -359,4 +362,8 @@
     extract: extractLiepinChatRecords,
     prepare: prepareLiepinSync
   };
+  globalThis.JobChatSiteAdapters?.register('liepin', {
+    siteKey: 'liepin', supportsJobDetail: false, prepareSync: prepareLiepinSync,
+    extractRecords: extractLiepinChatRecords
+  });
 })();

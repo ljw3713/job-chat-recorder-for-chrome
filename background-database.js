@@ -49,6 +49,9 @@
         byKey.set(record.recordKey, {
           ...old,
           ...record,
+          boss: { ...(old.boss || {}), ...(record.boss || {}) },
+          jobRef: { ...(old.jobRef || {}), ...(record.jobRef || {}) },
+          jobInfo: record.jobInfo || old.jobInfo || {},
           note: old.note || record.note || '',
           applicationDate: old.applicationDate || record.applicationDate,
           updatedDate: record.updatedDate || old.updatedDate,
@@ -94,6 +97,7 @@
         inserted: Number(summary.inserted || 0),
         updated: Number(summary.updated || 0),
         updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
+        jobDetail: summary.jobDetail || undefined,
         saved: false,
         interrupted: Boolean(extractedData.interrupted),
         completed: !extractedData.interrupted,
@@ -128,11 +132,12 @@
         inserted: Number(summary.inserted || 0),
         updated: Number(summary.updated || 0),
         updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
+        jobDetail: summary.jobDetail || undefined,
         saved: false,
         interrupted: Boolean(partial.interrupted),
         completed: Boolean(partial.completed),
         synced: Number(partial.synced || incoming.length),
-        sourceTotal: Number(partial.total || incoming.length)
+        sourceTotal: Number(partial.sourceTotal || partial.total || incoming.length)
       }
     };
 
@@ -165,6 +170,7 @@
         inserted: merged.inserted,
         updated: merged.updated,
         updatedMsg: Number(pending?.syncSummary?.updatedMsg || pending?.syncSummary?.updated || merged.updated || 0),
+        jobDetail: pending?.syncSummary?.jobDetail || undefined,
         saved: true
       }
     };

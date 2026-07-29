@@ -1,202 +1,838 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>招聘沟通记录</title>
-  <style>
-    body { margin: 0; background: #f6f7f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; }
-    header { padding: 20px 28px; background: white; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 10; }
-    h1 { margin: 0 0 8px; font-size: 20px; }
-    .meta { color: #6b7280; font-size: 13px; }
-    main { padding: 20px 28px; }
-    .toolbar { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
-    .toolbar-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    .toolbar-row.actions { align-items: center; }
-    .toolbar-row.filters { align-items: center; }
-    button { border: 0; border-radius: 8px; padding: 9px 12px; font-size: 14px; cursor: pointer; background: #111827; color: white; }
-    button.secondary { background: #16a085; }
-    button.light { background: #374151; }
-    button.danger { background: #dc2626; }
-    button:disabled { opacity: .55; cursor: not-allowed; }
-    .filter-box { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; background: white; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; user-select: none; box-sizing: border-box; min-height: 38px; white-space: nowrap; }
-    .filter-box input[type=checkbox] { width: 16px; height: 16px; }
-    .filter-box select, .filter-box input[type=date] { border: 0; background: transparent; outline: none; font-size: 14px; max-width: 180px; }
-    .filter-box.disabled { opacity: .65; cursor: not-allowed; }
-    .filter-box.disabled input { cursor: not-allowed; }
-    .hint { color: #6b7280; font-size: 13px; }
-    .toolbar-hint { margin-top: -2px; }
-    .meta strong { color: #374151; font-weight: 700; }
-    pre { background: #111827; color: #f9fafb; border-radius: 12px; padding: 18px; overflow: auto; line-height: 1.5; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; background: white; margin-bottom: 18px; border-radius: 12px; overflow: hidden; table-layout: fixed; }
-    th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; font-size: 13px; vertical-align: top; word-break: break-word; }
-    th { background: #f3f4f6; font-weight: 600; }
-    th.select, td.select-cell { width: 40px; min-width: 40px; max-width: 40px; padding-left: 12px; padding-right: 6px; text-align: center; box-sizing: border-box; }
-    th.select input, td.select-cell input { width: 16px; height: 16px; margin: 0; vertical-align: middle; cursor: pointer; }
-    th.source, td.source-cell { width: 8%; min-width: 72px; box-sizing: border-box; }
-    th.company, td.company-cell { width: 12%; }
-    th.job, td.job-cell { width: 15%; }
-    th.date, td.date-cell { width: 8%; }
-    th.note, td.note-cell { width: 10%; }
-    th.status, td.status-cell { width: 90px; }
-    th.recruiter, td.recruiter-cell { width: 12%; }
-    th.message, td.message-cell { width: 21%; }
-    td.editable { cursor: text; min-height: 20px; }
-    td.editable:hover { background: #fff7ed; }
-    td.editable.editing { background: #fffbeb; outline: 2px solid #f59e0b; outline-offset: -2px; }
-    .empty { background: white; border-radius: 12px; padding: 18px; color: #6b7280; }
-    .section-title { margin: 18px 0 8px; font-size: 14px; color: #374151; }
-    .status-card { display: none; background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; margin-bottom: 18px; color: #374151; align-items: center; gap: 12px; }
-    .status-card.show { display: flex; }
-    .status-card.error { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
-    .status-card.ready { color: #065f46; border-color: #a7f3d0; background: #ecfdf5; }
-    .status-spinner { width: 18px; height: 18px; border: 3px solid #d1fae5; border-top-color: #16a085; border-radius: 50%; animation: spin .8s linear infinite; flex: 0 0 auto; }
-    .status-card.error .status-spinner { display: none; }
-    .modal-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 50; padding: 24px; box-sizing: border-box; }
-    .modal-backdrop.show { display: flex; }
-    .modal { width: min(920px, 100%); max-height: 82vh; overflow: auto; background: white; border-radius: 8px; box-shadow: 0 24px 60px rgba(17,24,39,.24); }
-    .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #e5e7eb; }
-    .modal-header h2 { margin: 0; font-size: 16px; }
-    .modal-body { padding: 16px 18px; }
-    .modal table { margin-bottom: 0; }
-    .send-form { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; margin-bottom: 14px; }
-    .send-form textarea { grid-column: 1 / -1; min-height: 100px; box-sizing: border-box; resize: vertical; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
-    .send-form label { color: #374151; font-size: 13px; }
-    .send-form input { width: 64px; margin-left: 6px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
-    .send-targets { max-height: 420px; overflow-y: auto; }
-    .send-log { margin: 14px 0 0; max-height: 180px; overflow: auto; background: #111827; color: #f9fafb; border-radius: 8px; padding: 10px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
-    .send-summary { color: #6b7280; font-size: 13px; margin: 0 0 10px; }
-    th.action, td.action-cell { width: 90px; }
-    .floating-log-btn { position: fixed; left: 18px; bottom: 18px; z-index: 30; box-shadow: 0 10px 24px rgba(17,24,39,.18); }
-    .log-box { background: #111827; color: #f9fafb; border-radius: 8px; padding: 14px; overflow: auto; max-height: 62vh; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <header>
-    <h1 id="pageHeading">招聘沟通记录</h1>
-    <div id="meta" class="meta"></div>
-  </header>
-  <main>
-    <div id="statusBox" class="status-card"><span class="status-spinner"></span><span id="statusText">正在提取沟通记录...</span></div>
-    <div class="toolbar">
-      <div class="toolbar-row actions">
-        <button id="saveBtn" class="secondary">保存到总记录</button>
-        <button id="overviewBtn" class="light">查看总记录</button>
-        <button id="copyTableBtn">复制表格</button>
-        <button id="downloadCsvBtn" class="secondary">下载 CSV</button>
-        <button id="deleteSelectedBtn" class="danger">删除选中</button>
-        <button id="ignoreSelectedBtn" class="danger">忽略选中</button>
-        <button id="ignoredRecordsBtn" class="secondary" style="display:none;">忽略记录</button>
-        <label class="filter-box">
-          <input id="todayOnly" type="checkbox" />
-          只显示今天沟通
-        </label>
-        <button id="downloadJsonBtn" class="secondary">下载 JSON</button>
-        <button id="importCsvBtn" class="secondary" style="display:none;">导入 CSV</button>
-        <button id="sendMessageBtn" class="secondary" style="display:none;">发送信息</button>
-        <input id="importCsvInput" type="file" accept=".csv,text/csv" style="display:none;" />
-        <button id="copyJsonBtn" class="light" style="display:none;">复制 JSON</button>
-        <label class="filter-box" id="syncRateBox" style="display:none;">每
-          <select id="syncRateUnit">
-            <option value="second">秒</option>
-            <option value="minute">分</option>
-            <option value="hour">时</option>
-          </select>
-          同步
-          <input id="syncRateLimit" type="number" min="1" max="3600" value="2" style="width:64px;border:0;outline:none;background:transparent;font-size:14px;" />
-          条
-        </label>
-        <button id="startSyncBtn" class="secondary" style="display:none;">同步</button>
-        <button id="cancelSyncBtn" class="danger" style="display:none;">中断</button>
-        <button id="resumeSyncBtn" class="secondary" style="display:none;">继续</button>
-        <input id="queryInput" type="search" placeholder="查询公司、岗位、招聘者、原消息" style="margin-left:auto;min-width:250px;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;" />
-      </div>
-      <div class="toolbar-row filters">
-        <label class="filter-box">来源
-          <select id="sourceFilter"><option value="">全部来源</option></select>
-        </label>
-        <label class="filter-box">公司
-          <select id="companyFilter"><option value="">全部公司</option></select>
-        </label>
-        <label class="filter-box">消息状态
-          <select id="messageStatusFilter">
-            <option value="">全部</option>
-            <option value="0">未读</option>
-            <option value="1">已读</option>
-          </select>
-        </label>
-        <label class="filter-box">时间
-          <select id="dateFieldFilter">
-            <option value="updatedDate">更新时间</option>
-            <option value="applicationDate">申请时间</option>
-          </select>
-        </label>
-        <label class="filter-box">开始
-          <input id="dateFrom" type="date" />
-        </label>
-        <label class="filter-box">结束
-          <input id="dateTo" type="date" />
-        </label>
-        <label class="filter-box">排序
-          <select id="sortBy">
-            <option value="updatedDate-desc">更新时间 ↓</option>
-            <option value="updatedDate-asc">更新时间 ↑</option>
-            <option value="applicationDate-desc">申请时间 ↓</option>
-            <option value="applicationDate-asc">申请时间 ↑</option>
-          </select>
-        </label>
-      </div>
-      <div class="hint toolbar-hint">记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。岗位和备注列可双击编辑。</div>
-    </div>
-    <div id="pageHint" class="hint"></div>
-    <div id="tableBox"></div>
-    <div class="section-title">JSON 预览</div>
-    <pre id="jsonBox">loading...</pre>
-  </main>
-  <button id="requestLogsBtn" class="light floating-log-btn" style="display:none;">请求日志</button>
-  <div id="ignoredModal" class="modal-backdrop">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>忽略记录</h2>
-        <button id="closeIgnoredModalBtn" class="light">关闭</button>
-      </div>
-      <div id="ignoredRecordsBox" class="modal-body"></div>
-    </div>
-  </div>
-  <div id="requestLogsModal" class="modal-backdrop">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>请求日志</h2>
-        <button id="closeRequestLogsModalBtn" class="light">关闭</button>
-      </div>
-      <div class="modal-body">
-        <pre id="requestLogsBox" class="log-box">暂无请求日志。</pre>
-      </div>
-    </div>
-  </div>
-  <div id="sendMessageModal" class="modal-backdrop">
-    <div class="modal">
-      <div class="modal-header">
-        <h2 id="sendMessageTitle">发送信息</h2>
-        <button id="closeSendMessageModalBtn" class="light">关闭</button>
-      </div>
-      <div class="modal-body">
-        <div class="send-form">
-          <textarea id="sendMessageText" maxlength="1000" placeholder="请输入要发送的消息（1–1000 个字符）"></textarea>
-          <span id="sendMessageCount" class="hint">0 / 1000</span>
-          <button id="startSendMessageBtn" class="secondary">发送</button>
-          <label>每分钟发送数<input id="sendMessageRate" type="number" min="1" value="10" /></label>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>招聘沟通记录</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f6f7f9;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #111827;
+      }
+      header {
+        padding: 20px 28px;
+        background: white;
+        border-bottom: 1px solid #e5e7eb;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      .meta {
+        color: #6b7280;
+        font-size: 13px;
+      }
+      main {
+        padding: 20px 28px;
+      }
+      .toolbar {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .toolbar-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .toolbar-row.actions {
+        align-items: center;
+      }
+      .toolbar-row.filters {
+        align-items: center;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 9px 12px;
+        font-size: 14px;
+        cursor: pointer;
+        background: #111827;
+        color: white;
+      }
+      button.secondary {
+        background: #16a085;
+      }
+      button.light {
+        background: #374151;
+      }
+      button.danger {
+        background: #dc2626;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .filter-box {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: white;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 14px;
+        user-select: none;
+        box-sizing: border-box;
+        min-height: 38px;
+        white-space: nowrap;
+      }
+      .filter-box input[type='checkbox'] {
+        width: 16px;
+        height: 16px;
+      }
+      .filter-box select,
+      .filter-box input[type='date'] {
+        border: 0;
+        background: transparent;
+        outline: none;
+        font-size: 14px;
+        max-width: 180px;
+      }
+      .filter-box.disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+      }
+      .filter-box.disabled input {
+        cursor: not-allowed;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 13px;
+      }
+      .toolbar-hint {
+        margin-top: -2px;
+      }
+      .meta strong {
+        color: #374151;
+        font-weight: 700;
+      }
+      pre {
+        background: #111827;
+        color: #f9fafb;
+        border-radius: 12px;
+        padding: 18px;
+        overflow: auto;
+        line-height: 1.5;
+        font-size: 13px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        margin-bottom: 18px;
+        border-radius: 12px;
+        overflow: hidden;
+        table-layout: fixed;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px;
+        text-align: left;
+        font-size: 13px;
+        vertical-align: top;
+        word-break: break-word;
+      }
+      th {
+        background: #f3f4f6;
+        font-weight: 600;
+      }
+      th.select,
+      td.select-cell {
+        width: 40px;
+        min-width: 40px;
+        max-width: 40px;
+        padding-left: 12px;
+        padding-right: 6px;
+        text-align: center;
+        box-sizing: border-box;
+      }
+      th.select input,
+      td.select-cell input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        vertical-align: middle;
+        cursor: pointer;
+      }
+      th.source,
+      td.source-cell {
+        width: 8%;
+        min-width: 72px;
+        box-sizing: border-box;
+      }
+      th.company,
+      td.company-cell {
+        width: 12%;
+      }
+      th.job,
+      td.job-cell {
+        width: 15%;
+      }
+      th.job {
+        vertical-align: middle;
+      }
+      .job-sync-filter {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #4b5563;
+        cursor: pointer;
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+      .job-sync-filter input {
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        cursor: pointer;
+      }
+      th.date,
+      td.date-cell {
+        width: 8%;
+      }
+      th.note,
+      td.note-cell {
+        width: 10%;
+      }
+      th.status,
+      td.status-cell {
+        width: 90px;
+      }
+      th.recruiter,
+      td.recruiter-cell {
+        width: 12%;
+      }
+      th.message,
+      td.message-cell {
+        width: 21%;
+      }
+      td.editable {
+        cursor: text;
+        min-height: 20px;
+      }
+      td.editable:hover {
+        background: #fff7ed;
+      }
+      td.editable.editing {
+        background: #fffbeb;
+        outline: 2px solid #f59e0b;
+        outline-offset: -2px;
+      }
+      .empty {
+        background: white;
+        border-radius: 12px;
+        padding: 18px;
+        color: #6b7280;
+      }
+      .section-title {
+        margin: 18px 0 8px;
+        font-size: 14px;
+        color: #374151;
+      }
+      .status-card {
+        display: none;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 18px;
+        color: #374151;
+        align-items: center;
+        gap: 12px;
+      }
+      .status-card.show {
+        display: flex;
+      }
+      .status-card.error {
+        color: #991b1b;
+        border-color: #fecaca;
+        background: #fef2f2;
+      }
+      .status-card.ready {
+        color: #065f46;
+        border-color: #a7f3d0;
+        background: #ecfdf5;
+      }
+      .status-spinner {
+        width: 18px;
+        height: 18px;
+        border: 3px solid #d1fae5;
+        border-top-color: #16a085;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        flex: 0 0 auto;
+      }
+      .status-card.error .status-spinner {
+        display: none;
+      }
+      .status-content {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .sync-category-progress {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .sync-progress-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 4px;
+        color: #4b5563;
+        font-size: 12px;
+      }
+      .sync-progress-track {
+        height: 7px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #e5e7eb;
+      }
+      .sync-progress-track > span {
+        display: block;
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: #16a085;
+        transition: width 0.2s ease;
+      }
+      .sync-progress-item.job-detail .sync-progress-track > span {
+        background: #2563eb;
+      }
+      .sync-refresh-note {
+        margin: 2px 0 0;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(17, 24, 39, 0.45);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      .modal-backdrop.show {
+        display: flex;
+      }
+      .modal {
+        width: min(920px, 100%);
+        max-height: 82vh;
+        overflow: auto;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 24px 60px rgba(17, 24, 39, 0.24);
+      }
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .modal-header h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .modal-body {
+        padding: 16px 18px;
+      }
+      .modal table {
+        margin-bottom: 0;
+      }
+      .send-form {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+      .send-form textarea {
+        grid-column: 1 / -1;
+        min-height: 100px;
+        box-sizing: border-box;
+        resize: vertical;
+        padding: 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font: inherit;
+      }
+      .send-form label {
+        color: #374151;
+        font-size: 13px;
+      }
+      .send-form input {
+        width: 64px;
+        margin-left: 6px;
+        padding: 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+      }
+      .send-targets {
+        max-height: 420px;
+        overflow-y: auto;
+      }
+      .send-log {
+        margin: 14px 0 0;
+        max-height: 180px;
+        overflow: auto;
+        background: #111827;
+        color: #f9fafb;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .send-log:focus {
+        outline: 2px solid #14b8a6;
+        outline-offset: 2px;
+      }
+      .send-summary {
+        color: #6b7280;
+        font-size: 13px;
+        margin: 0 0 10px;
+      }
+      .refresh-progress {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #e5e7eb;
+        margin: 10px 0 14px;
+      }
+      .refresh-progress > span {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: #16a085;
+        transition: width 0.2s ease;
+      }
+      .refresh-note {
+        color: #6b7280;
+        font-size: 12px;
+        margin: -6px 0 14px;
+      }
+      .refresh-summary {
+        color: #4b5563;
+        font-size: 13px;
+        margin: 0 0 10px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+      }
+      .refresh-summary .refresh-counts {
+        display: inline-flex;
+        gap: 12px;
+        white-space: nowrap;
+      }
+      th.action,
+      td.action-cell {
+        width: 90px;
+      }
+      .floating-log-btn {
+        position: fixed;
+        left: 18px;
+        bottom: 18px;
+        z-index: 30;
+        box-shadow: 0 10px 24px rgba(17, 24, 39, 0.18);
+      }
+      .log-box {
+        background: #111827;
+        color: #f9fafb;
+        border-radius: 8px;
+        padding: 14px;
+        overflow: auto;
+        max-height: 62vh;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .job-info-card {
+        position: fixed;
+        display: none;
+        z-index: 60;
+        width: min(430px, calc(100vw - 24px));
+        max-height: min(420px, calc(100vh - 24px));
+        overflow: auto;
+        box-sizing: border-box;
+        padding: 14px;
+        border-radius: 10px;
+        background: #111827;
+        color: #f9fafb;
+        box-shadow: 0 16px 36px rgba(17, 24, 39, 0.3);
+        font-size: 13px;
+        line-height: 1.55;
+        pointer-events: auto;
+      }
+      .job-info-card.show {
+        display: block;
+      }
+      .job-info-card h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .job-info-card .keywords {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0 0 10px;
+      }
+      .job-info-card .keyword {
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: #134e4a;
+        color: #ccfbf1;
+        font-size: 12px;
+      }
+      .job-info-card .detail {
+        margin: 0;
+        white-space: pre-wrap;
+        color: #e5e7eb;
+      }
+      .job-info-card .job-info-meta {
+        margin-top: 10px;
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1 id="pageHeading">招聘沟通记录</h1>
+      <div id="meta" class="meta"></div>
+    </header>
+    <main>
+      <div id="statusBox" class="status-card">
+        <span class="status-spinner"></span>
+        <div class="status-content">
+          <span id="statusText">正在提取沟通记录...</span>
+          <div
+            id="syncCategoryProgress"
+            class="sync-category-progress"
+            style="display: none"
+          >
+            <div class="sync-progress-item">
+              <div class="sync-progress-heading">
+                <span>沟通记录</span>
+                <span id="communicationProgressText">0 / 0</span>
+              </div>
+              <div class="sync-progress-track">
+                <span id="communicationProgressBar"></span>
+              </div>
+            </div>
+            <div class="sync-progress-item job-detail">
+              <div class="sync-progress-heading">
+                <span>岗位信息</span>
+                <span id="jobDetailProgressText">0 / 0</span>
+              </div>
+              <div class="sync-progress-track">
+                <span id="jobDetailProgressBar"></span>
+              </div>
+            </div>
+            <p
+              id="syncRefreshNote"
+              class="sync-refresh-note"
+              style="display: none"
+            >
+              备注：同步过程中会自动刷新最近使用的 zhipin.com
+              标签页，用于获取必要的数据。
+            </p>
+          </div>
         </div>
-        <p id="sendMessageSummary" class="send-summary"></p>
-        <div id="sendMessageTargets" class="send-targets"></div>
-        <pre id="sendMessageLog" class="send-log" style="display:none;">尚未开始发送。</pre>
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-row actions">
+          <button id="saveBtn" class="secondary">保存到总记录</button>
+          <button id="overviewBtn" class="light">查看总记录</button>
+          <button id="copyTableBtn">复制表格</button>
+          <button id="downloadCsvBtn" class="secondary">下载 CSV</button>
+          <button id="updateDetailsBtn" class="secondary">更新选中</button>
+          <button id="deleteSelectedBtn" class="danger">删除选中</button>
+          <button id="ignoreSelectedBtn" class="danger">忽略选中</button>
+          <button
+            id="ignoredRecordsBtn"
+            class="secondary"
+            style="display: none"
+          >
+            忽略记录
+          </button>
+          <label class="filter-box">
+            <input id="todayOnly" type="checkbox" />
+            今日沟通
+          </label>
+          <button id="downloadJsonBtn" class="secondary">下载 JSON</button>
+          <button id="importCsvBtn" class="secondary" style="display: none">
+            导入 CSV
+          </button>
+          <button id="sendMessageBtn" class="secondary" style="display: none">
+            发送信息
+          </button>
+          <input
+            id="importCsvInput"
+            type="file"
+            accept=".csv,text/csv"
+            style="display: none"
+          />
+          <button id="copyJsonBtn" class="light" style="display: none">
+            复制 JSON
+          </button>
+          <label class="filter-box" id="syncRateBox" style="display: none"
+            >每
+            <select id="syncRateUnit">
+              <option value="second">秒</option>
+              <option value="minute">分</option>
+              <option value="hour">时</option>
+            </select>
+            同步
+            <input
+              id="syncRateLimit"
+              type="number"
+              min="1"
+              max="3600"
+              value="2"
+              style="
+                width: 64px;
+                border: 0;
+                outline: none;
+                background: transparent;
+                font-size: 14px;
+              "
+            />
+            条
+          </label>
+          <button id="startSyncBtn" class="secondary" style="display: none">
+            同步
+          </button>
+          <button id="cancelSyncBtn" class="danger" style="display: none">
+            中断
+          </button>
+          <button id="resumeSyncBtn" class="secondary" style="display: none">
+            继续
+          </button>
+          <label
+            id="resumeInsertBox"
+            style="display: none; align-items: center; gap: 4px"
+          >
+            <input id="resumeInsert" type="checkbox" checked />
+            新增
+          </label>
+          <label
+            id="resumeUpdateBox"
+            style="display: none; align-items: center; gap: 4px"
+          >
+            <input id="resumeUpdate" type="checkbox" checked />
+            更新
+          </label>
+          <input
+            id="queryInput"
+            type="search"
+            placeholder="查询公司、岗位、招聘者、原消息"
+            style="
+              margin-left: auto;
+              min-width: 250px;
+              padding: 9px 12px;
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+              font-size: 14px;
+            "
+          />
+        </div>
+        <div class="toolbar-row filters">
+          <label class="filter-box"
+            >来源
+            <select id="sourceFilter">
+              <option value="">全部来源</option>
+            </select>
+          </label>
+          <label class="filter-box"
+            >公司
+            <select id="companyFilter">
+              <option value="">全部公司</option>
+            </select>
+          </label>
+          <label class="filter-box"
+            >消息状态
+            <select id="messageStatusFilter">
+              <option value="">全部</option>
+              <option value="0">未读</option>
+              <option value="1">已读</option>
+            </select>
+          </label>
+          <label class="filter-box"
+            >时间
+            <select id="dateFieldFilter">
+              <option value="updatedDate">更新时间</option>
+              <option value="applicationDate">申请时间</option>
+            </select>
+          </label>
+          <label class="filter-box"
+            >开始
+            <input id="dateFrom" type="date" />
+          </label>
+          <label class="filter-box"
+            >结束
+            <input id="dateTo" type="date" />
+          </label>
+          <label class="filter-box"
+            >排序
+            <select id="sortBy">
+              <option value="updatedDate-desc">更新时间 ↓</option>
+              <option value="updatedDate-asc">更新时间 ↑</option>
+              <option value="applicationDate-desc">申请时间 ↓</option>
+              <option value="applicationDate-asc">申请时间 ↑</option>
+            </select>
+          </label>
+        </div>
+        <div class="hint toolbar-hint">
+          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，岗位列可悬浮查看详情。
+        </div>
+      </div>
+      <div id="pageHint" class="hint"></div>
+      <div id="tableBox"></div>
+      <div class="section-title">JSON 预览</div>
+      <pre id="jsonBox">loading...</pre>
+    </main>
+    <button
+      id="requestLogsBtn"
+      class="light floating-log-btn"
+      style="display: none"
+    >
+      请求日志
+    </button>
+    <div
+      id="jobInfoCard"
+      class="job-info-card"
+      role="dialog"
+      tabindex="-1"
+    ></div>
+    <div id="ignoredModal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>忽略记录</h2>
+          <button id="closeIgnoredModalBtn" class="light">关闭</button>
+        </div>
+        <div id="ignoredRecordsBox" class="modal-body"></div>
       </div>
     </div>
-  </div>
-  <script src="shared-utils.js"></script>
-  <script src="shared-records.js"></script>
-  <script src="results-database.js"></script>
-  <script src="results.js"></script>
-</body>
+    <div id="requestLogsModal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>请求日志</h2>
+          <button id="closeRequestLogsModalBtn" class="light">关闭</button>
+        </div>
+        <div class="modal-body">
+          <pre id="requestLogsBox" class="log-box">暂无请求日志。</pre>
+        </div>
+      </div>
+    </div>
+    <div id="sendMessageModal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="sendMessageTitle">发送信息</h2>
+          <button id="closeSendMessageModalBtn" class="light">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="send-form">
+            <textarea
+              id="sendMessageText"
+              maxlength="1000"
+              placeholder="请输入要发送的消息（1–1000 个字符）"
+            ></textarea>
+            <span id="sendMessageCount" class="hint">0 / 1000</span>
+            <button id="startSendMessageBtn" class="secondary">发送</button>
+            <label
+              >每分钟发送数<input
+                id="sendMessageRate"
+                type="number"
+                min="1"
+                value="10"
+            /></label>
+          </div>
+          <p id="sendMessageSummary" class="send-summary"></p>
+          <div id="sendMessageTargets" class="send-targets"></div>
+          <pre id="sendMessageLog" class="send-log" style="display: none">
+尚未开始发送。</pre
+          >
+        </div>
+      </div>
+    </div>
+    <div id="updateDetailsModal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="updateDetailsTitle">更新岗位详情</h2>
+          <button id="closeUpdateDetailsModalBtn" class="light">关闭</button>
+        </div>
+        <div class="modal-body">
+          <p id="updateDetailsSummary" class="refresh-summary"></p>
+          <label
+            >每分钟并发数<input
+              id="updateDetailsRate"
+              type="number"
+              min="1"
+              max="3600"
+              value="20"
+          /></label>
+          <label
+            >重试延时（秒）<input
+              id="updateDetailsRetryDelay"
+              type="number"
+              min="1"
+              max="3600"
+              value="60"
+          /></label>
+          <label
+            >重试次数<input
+              id="updateDetailsRetryCount"
+              type="number"
+              min="1"
+              max="10"
+              value="3"
+          /></label>
+          <button id="startUpdateDetailsBtn" class="secondary">同步</button>
+          <div class="refresh-progress">
+            <span id="updateDetailsProgressBar"></span>
+          </div>
+          <div id="updateDetailsRefreshNote" class="refresh-note">
+            备注：同步过程中会自动刷新最近使用的 zhipin.com
+            标签页，用于获取必要的数据。
+          </div>
+          <div id="updateDetailsTargets" class="send-targets"></div>
+          <pre
+            id="updateDetailsLog"
+            class="send-log"
+            tabindex="0"
+            style="display: none"
+          ></pre>
+        </div>
+      </div>
+    </div>
+    <script src="runtime-config.js"></script>
+    <script src="shared-utils.js"></script>
+    <script src="shared-records.js"></script>
+    <script src="results-database.js"></script>
+    <script src="results.js"></script>
+  </body>
 </html>
