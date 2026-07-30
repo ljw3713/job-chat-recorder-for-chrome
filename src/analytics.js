@@ -199,7 +199,8 @@
 
   async function isUserEnabled() {
     const stored = await chrome.storage.local.get([ENABLED_KEY]);
-    return stored[ENABLED_KEY] !== false;
+    if (typeof stored[ENABLED_KEY] === 'boolean') return stored[ENABLED_KEY];
+    return runtimeConfig().analyticsUserEnabledByDefault !== false;
   }
 
   async function setEnabled(enabled) {

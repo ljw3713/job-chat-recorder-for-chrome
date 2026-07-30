@@ -142,9 +142,13 @@
       .toolbar-hint {
         margin-top: -2px;
       }
+
       .meta strong {
         color: #374151;
         font-weight: 700;
+      }
+      .sync-meta-details {
+        margin-top: 4px;
       }
       pre {
         background: #111827;
@@ -465,6 +469,25 @@
       }
       .modal table {
         margin-bottom: 0;
+      }
+      .rating-modal {
+        width: min(420px, 100%);
+      }
+      .rating-modal-close {
+        min-width: 36px;
+        padding: 4px 10px;
+        font-size: 22px;
+        line-height: 1;
+      }
+      .rating-modal-body {
+        padding: 28px 24px 24px;
+        text-align: center;
+      }
+      .rating-modal-message {
+        margin: 0 0 22px;
+        color: #374151;
+        font-size: 16px;
+        line-height: 1.7;
       }
       .send-form {
         display: grid;
@@ -874,11 +897,20 @@
           </label>
         </div>
         <div class="hint toolbar-hint">
-          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，公司、岗位和已完整同步的原消息列可悬浮查看详情。
+          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并。备注列可双击编辑，公司、岗位和原消息列可悬浮查看详情。
         </div>
       </div>
       <div id="pageHint" class="hint"></div>
       <div id="tableBox"></div>
+      <div>
+        <label>
+          <input id="analyticsEnabled" type="checkbox" />
+          允许匿名使用统计。仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。
+        </label>
+        <!-- <span id="analyticsHint" class="analytics-hint">
+
+        </span> -->
+      </div>
       <div
         id="jsonPreviewTabs"
         class="job-json-preview"
@@ -923,7 +955,9 @@
         role="tabpanel"
         tabindex="0"
         aria-labelledby="communicationTab"
-      >loading...</pre>
+      >
+loading...</pre
+      >
     </main>
     <button
       id="requestLogsBtn"
@@ -938,6 +972,34 @@
       role="dialog"
       tabindex="-1"
     ></div>
+    <div id="ratingPromptModal" class="modal-backdrop">
+      <div
+        class="modal rating-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ratingPromptTitle"
+      >
+        <div class="modal-header">
+          <h2 id="ratingPromptTitle">支持一下沟通助手</h2>
+          <button
+            id="closeRatingPromptBtn"
+            class="light rating-modal-close"
+            type="button"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
+        <div class="rating-modal-body">
+          <p class="rating-modal-message">
+            如果觉得这个插件不错，请为插件打个分。
+          </p>
+          <button id="confirmRatingPromptBtn" class="secondary" type="button">
+            好的
+          </button>
+        </div>
+      </div>
+    </div>
     <div id="ignoredModal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-header">
@@ -1045,10 +1107,10 @@
         </div>
       </div>
     </div>
-    <script src="runtime-config.js"></script>
-    <script src="shared-utils.js"></script>
-    <script src="shared-records.js"></script>
-    <script src="results-database.js"></script>
-    <script src="results.js"></script>
+    <script src="src/runtime-config.js"></script>
+    <script src="src/shared-utils.js"></script>
+    <script src="src/shared-records.js"></script>
+    <script src="src/results-database.js"></script>
+    <script src="src/results.js"></script>
   </body>
 </html>

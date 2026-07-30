@@ -846,7 +846,7 @@ jobChatPreparedSourceList
 ### 17.3 日志
 
 岗位及同步请求/响应日志、岗位更新摘要、标签页刷新日志和批量发送日志，都通过运行时
-消息发送到当前结果页，仅保存在 `results.js` 的内存数组中。当前页面最多保留最近
+消息发送到当前结果页，仅保存在 `src/results.js` 的内存数组中。当前页面最多保留最近
 1000 条请求日志和 200 条摘要或发送日志；开始新任务时清空，结果页关闭或刷新后
 丢失，不写入 `chrome.storage.local`。旧版本遗留的 `jobChatBossSendLogs` 会在后台
 启动时删除。
@@ -867,8 +867,15 @@ jobChatPreparedSourceList
 | `jobChatSendRates` | `{"boss":10,"liepin":10}` | 按站点保存的批量发送速率 |
 | `jobChatBossPcDeviceId` | string | BOSS 发送协议使用的本地设备 ID |
 | `jobChatLiepinImClientIds` | object | 按 `imId` 隔离的猎聘客户端 ID 缓存 |
+| `jobChatRatingPromptState` | `{"clickCount":11,"promptedAt":"","action":"dismissed"}` | 同步按钮点击次数及一次性评分提示状态 |
 
 设置和设备 ID 不随记录导出。
+
+评分提示在第 11 次点击同步按钮时出现。`promptedAt` 写入后不再重复弹出；
+`action` 可能为 `shown`、`dismissed` 或 `store_opened`。Chrome Web Store
+不提供查询当前用户是否已经评分的接口，因此该状态只表示用户已经处理过提示，
+不代表用户实际提交了评分。存储键、点击阈值和商店地址由
+`src/runtime-config.js` 的 `ratingPrompt` 配置。
 
 ## 18. 数据保存与合并
 
@@ -947,11 +954,11 @@ JSON、CSV、日志或浏览器本地存储备份均不应发布到公开仓库�
 
 本文主要对应：
 
-- `shared-records.js`：核心记录规范化、唯一键及岗位完整性。
-- `boss-extractor.js`：BOSS 记录、岗位引用和内部字段。
-- `liepin-extractor.js`：猎聘记录和内部字段。
-- `job-sync-core.js`：岗位同步结果。
-- `background-database.js`：同步结果及总记录合并。
-- `results-database.js`：CSV 导入、导出及“内部数据”边界。
-- `results.js`：页面、JSON 和 CSV 输出字段。
-- `background.js`：公司资料、同步状态、进度、日志和设置。
+- `src/shared-records.js`：核心记录规范化、唯一键及岗位完整性。
+- `src/boss-extractor.js`：BOSS 记录、岗位引用和内部字段。
+- `src/liepin-extractor.js`：猎聘记录和内部字段。
+- `src/job-sync-core.js`：岗位同步结果。
+- `src/background-database.js`：同步结果及总记录合并。
+- `src/results-database.js`：CSV 导入、导出及“内部数据”边界。
+- `src/results.js`：页面、JSON 和 CSV 输出字段。
+- `src/background.js`：公司资料、同步状态、进度、日志和设置。

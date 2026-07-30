@@ -58,14 +58,14 @@ if (globalThis.JobChatRuntimeConfig?.enableDebugLog) {
 importScripts('analytics.js', 'shared-utils.js', 'shared-records.js', 'background-database.js');
 
 const CONTENT_SCRIPT_FILES = [
-  'shared-utils.js',
-  'shared-records.js',
-  'content-common.js',
-  'site-adapters.js',
-  'job-sync-core.js',
-  'boss-extractor.js',
-  'liepin-extractor.js',
-  'content.js'
+  'src/shared-utils.js',
+  'src/shared-records.js',
+  'src/content-common.js',
+  'src/site-adapters.js',
+  'src/job-sync-core.js',
+  'src/boss-extractor.js',
+  'src/liepin-extractor.js',
+  'src/content.js'
 ];
 let activeBossSendTabId = null;
 let activeLiepinSendTabId = null;

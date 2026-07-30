@@ -3,6 +3,8 @@ const jsonBox = document.getElementById('jsonBox');
 const jsonPreviewTabs = document.getElementById('jsonPreviewTabs');
 const personalTab = document.getElementById('personalTab');
 const tableBox = document.getElementById('tableBox');
+const analyticsEnabled = document.getElementById('analyticsEnabled');
+const analyticsHint = document.getElementById('analyticsHint');
 const copyTableBtn = document.getElementById('copyTableBtn');
 const copyJsonBtn = document.getElementById('copyJsonBtn');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
@@ -40,6 +42,9 @@ const syncRateBox = document.getElementById('syncRateBox');
 const syncRateUnit = document.getElementById('syncRateUnit');
 const syncRateLimit = document.getElementById('syncRateLimit');
 const startSyncBtn = document.getElementById('startSyncBtn');
+const ratingPromptModal = document.getElementById('ratingPromptModal');
+const closeRatingPromptBtn = document.getElementById('closeRatingPromptBtn');
+const confirmRatingPromptBtn = document.getElementById('confirmRatingPromptBtn');
 const importCsvBtn = document.getElementById('importCsvBtn');
 const importCsvInput = document.getElementById('importCsvInput');
 const ignoredModal = document.getElementById('ignoredModal');
@@ -94,6 +99,15 @@ function featureFlag(name, defaultValue = false) {
 const sendLogEnabled = featureFlag('log', isDevelopmentVersion);
 const debugEnabled = featureFlag('debug', isDevelopmentVersion);
 const debugDataEnabled = mode === 'overview' && debugEnabled;
+const ratingPromptConfig = runtimeConfig.ratingPrompt || {};
+const RATING_PROMPT_STATE_KEY = String(
+  ratingPromptConfig.storageKey || 'jobChatRatingPromptState'
+);
+const configuredRatingPromptThreshold = Number(ratingPromptConfig.clickThreshold);
+const RATING_PROMPT_CLICK_THRESHOLD = Number.isFinite(configuredRatingPromptThreshold)
+  ? Math.max(0, Math.floor(configuredRatingPromptThreshold))
+  : 10;
+const CHROME_WEB_STORE_URL = String(ratingPromptConfig.storeUrl || '');
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const {
@@ -122,6 +136,46 @@ function trackAnalyticsEvent(eventName, params = {}) {
     eventName,
     params
   }).catch(() => ({ ok: false, sent: false }));
+}
+
+function setAnalyticsHint(configured) {
+  if (!analyticsHint) return;
+  analyticsHint.textContent = configured
+    ? '仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。'
+    : '当前构建尚未配置 GA4，不会发送统计数据。';
+}
+
+async function initializeAnalyticsSetting() {
+  if (!analyticsEnabled) return;
+  const response = await chrome.runtime.sendMessage({
+    type: 'JOB_CHAT_ANALYTICS_STATUS'
+  }).catch(() => null);
+  const status = response?.data || {};
+  analyticsEnabled.checked = status.enabled !== false;
+  setAnalyticsHint(Boolean(status.configured));
+}
+
+if (analyticsEnabled) {
+  analyticsEnabled.addEventListener('change', async () => {
+    analyticsEnabled.disabled = true;
+    const enabled = analyticsEnabled.checked;
+    const response = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_ANALYTICS_SET_ENABLED',
+      enabled
+    }).catch(() => null);
+    analyticsEnabled.disabled = false;
+    if (!response?.ok) {
+      analyticsEnabled.checked = !enabled;
+      return;
+    }
+    setAnalyticsHint(Boolean(response.data?.configured));
+    if (enabled) {
+      chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_ANALYTICS_ACTIVE',
+        pageMode: mode
+      }).catch(() => {});
+    }
+  });
 }
 
 function analyticsSiteForRecords(records) {
@@ -689,18 +743,22 @@ function updateMeta() {
   const syncText = summary?.saved ? ` · 保存结果：新增 ${summary.inserted || 0} 条，更新消息 ${updatedMsg} 条` : '';
   const jobDetail = summary?.jobDetail;
   const jobDetailText = jobDetail && Number(jobDetail.requested || 0)
-    ? ` · 岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止；可在总览页手动更新）' : ''}`
+    ? `岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止；可在总览页手动更新）' : ''}`
     : '';
   const conversation = summary?.conversation;
   const conversationText = conversation && Number(conversation.requested || 0)
-    ? ` · 完整会话：请求 ${conversation.requested || 0} 条，成功 ${conversation.success || 0} 条，失败 ${conversation.failed || 0} 条，跳过 ${conversation.skipped || 0} 条`
+    ? `完整会话：请求 ${conversation.requested || 0} 条，成功 ${conversation.success || 0} 条，失败 ${conversation.failed || 0} 条，跳过 ${conversation.skipped || 0} 条`
     : '';
   const title = mode === 'sync' ? (latestData?.siteTitle || '同步结果') : '招聘沟通记录总览';
   pageHeading.textContent = title;
   document.title = title;
 
   if (mode === 'sync') {
-    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${conversationText.replace(/(\d+)/g, '<strong>$1</strong>')}${jobDetailText.replace(/(\d+)/g, '<strong>$1</strong>')}`;
+    const detailText = `${conversationText} | ${jobDetailText}`.replace(/^ · /,'');
+    const detailHtml = detailText
+      ? `<div class="sync-meta-details">${detailText.replace(/(\d+)/g, '<strong>$1</strong>')}</div>`
+      : '';
+    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${detailHtml}`;
     return;
   }
 
@@ -1813,6 +1871,66 @@ function normalizeSyncRateSettings() {
   return { unit, count };
 }
 
+async function updateRatingPromptState(updates) {
+  const stored = await chrome.storage.local.get([RATING_PROMPT_STATE_KEY]);
+  const current = stored[RATING_PROMPT_STATE_KEY] || {};
+  await chrome.storage.local.set({
+    [RATING_PROMPT_STATE_KEY]: {
+      ...current,
+      clickCount: Math.max(0, Number(current.clickCount) || 0),
+      ...updates
+    }
+  });
+}
+
+async function countSyncClickAndMaybeShowRatingPrompt() {
+  try {
+    const stored = await chrome.storage.local.get([RATING_PROMPT_STATE_KEY]);
+    const current = stored[RATING_PROMPT_STATE_KEY] || {};
+    if (current.promptedAt) return;
+    const clickCount = Math.max(0, Number(current.clickCount) || 0) + 1;
+    const updates = { ...current, clickCount };
+    if (clickCount > RATING_PROMPT_CLICK_THRESHOLD) {
+      updates.promptedAt = new Date().toISOString();
+      updates.action = 'shown';
+    }
+    await chrome.storage.local.set({ [RATING_PROMPT_STATE_KEY]: updates });
+    if (updates.promptedAt && ratingPromptModal) {
+      ratingPromptModal.classList.add('show');
+      confirmRatingPromptBtn?.focus();
+    }
+  } catch (_) {
+    // 评分提示状态失败不应影响正常同步。
+  }
+}
+
+function closeRatingPrompt() {
+  ratingPromptModal?.classList.remove('show');
+}
+
+if (closeRatingPromptBtn) {
+  closeRatingPromptBtn.addEventListener('click', () => {
+    closeRatingPrompt();
+    void updateRatingPromptState({
+      action: 'dismissed',
+      handledAt: new Date().toISOString()
+    }).catch(() => {});
+  });
+}
+
+if (confirmRatingPromptBtn) {
+  confirmRatingPromptBtn.addEventListener('click', async () => {
+    closeRatingPrompt();
+    await updateRatingPromptState({
+      action: 'store_opened',
+      handledAt: new Date().toISOString()
+    }).catch(() => {});
+    if (CHROME_WEB_STORE_URL) {
+      await chrome.tabs.create({ url: CHROME_WEB_STORE_URL, active: true }).catch(() => {});
+    }
+  });
+}
+
 if (syncRateLimit || syncRateUnit) {
   ResultsDb.loadSyncRateSettings().then((settings) => {
     if (syncRateUnit) syncRateUnit.value = settings.unit || 'second';
@@ -1825,6 +1943,7 @@ if (syncRateLimit || syncRateUnit) {
 
 if (startSyncBtn) {
   startSyncBtn.addEventListener('click', async () => {
+    await countSyncClickAndMaybeShowRatingPrompt();
     const includeInsert = Boolean(resumeInsert?.checked);
     const includeUpdate = Boolean(resumeUpdate?.checked);
     if (!includeInsert && !includeUpdate) {
@@ -1919,5 +2038,6 @@ chrome.runtime.sendMessage({
   type: 'JOB_CHAT_ANALYTICS_ACTIVE',
   pageMode: mode
 }).catch(() => {});
+initializeAnalyticsSetting();
 configurePageMode();
 loadAndRenderLatest();

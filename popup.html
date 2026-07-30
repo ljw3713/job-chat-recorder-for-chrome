@@ -17,10 +17,6 @@
     .error { margin-top: 10px; color: #b91c1c; font-size: 12px; white-space: pre-wrap; }
     .hidden { display: none !important; }
     .secondary { margin-top: 8px; background: #2563eb; }
-    .analytics-setting { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
-    .analytics-setting label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #374151; cursor: pointer; }
-    .analytics-setting input { margin: 0; }
-    .analytics-hint { display: block; margin-top: 5px; color: #6b7280; font-size: 11px; line-height: 1.45; }
     .spinner { display: none; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.5); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
     body.loading .spinner { display: inline-block; }
     body.loading #extractBtn { background: #0f766e; }
@@ -34,16 +30,9 @@
     <div id="currentSite" class="site warn">正在检查当前网站...</div>
     <button id="extractBtn"><span class="spinner"></span><span id="btnText">同步当前聊天记录</span></button>
     <button id="overviewBtn" class="secondary">查看记录总览</button>
-    <div class="analytics-setting">
-      <label>
-        <input id="analyticsEnabled" type="checkbox" />
-        允许匿名使用统计
-      </label>
-      <span id="analyticsHint" class="analytics-hint">仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。</span>
-    </div>
     <div id="error" class="error"></div>
   </div>
-  <script src="runtime-config.js"></script>
-  <script src="popup.js"></script>
+  <script src="src/runtime-config.js"></script>
+  <script src="src/popup.js"></script>
 </body>
 </html>

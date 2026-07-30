@@ -3,4 +3,4 @@ node_modules/
 dist/
 build/
 *.zip
-runtime-config.local.js
+src/runtime-config.local.js

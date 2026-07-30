@@ -78,8 +78,8 @@
 
 ### 开发版 GA4 配置
 
-本地开发版会在 `enableDebugLog=true` 时自动读取根目录下的
-`runtime-config.local.js`。打开该文件并填写：
+本地开发版会在 `enableDebugLog=true` 时自动读取
+`src/runtime-config.local.js`。打开该文件并填写：
 
 ```js
 (function () {
@@ -93,11 +93,40 @@
 
 保存后回到 `chrome://extensions/`，点击扩展卡片上的“重新加载”。该文件已经加入
 `.gitignore`，不会被 Git 提交，也不在正式打包文件清单中。可提交的字段示例保存在
-`runtime-config.local.example.js`，不要把真实 Secret 写入示例文件。
+`src/runtime-config.local.example.js`，不要把真实 Secret 写入示例文件。
 
 开发版发送到 GA4 的 `extension_version` 会在 manifest 版本后自动追加 `-dev`，
-例如当前开发版为 `5.1.0-dev`；正式打包时会自动关闭开发模式，并上报 `5.1.0`。
+例如当前开发版为 `5.2.0-dev`；正式打包时会自动关闭开发模式，并上报 `5.2.0`。
 `manifest.version` 始终保持 Chrome 要求的纯数字格式，不直接写入 `-dev`。
+
+### 评分提示配置和开发重置
+
+评分提示配置位于 `src/runtime-config.js` 的 `ratingPrompt`：
+
+```js
+ratingPrompt: {
+  storageKey: 'jobChatRatingPromptState',
+  clickThreshold: 10,
+  storeUrl: 'Chrome Web Store 插件页地址'
+}
+```
+
+`clickThreshold: 10` 表示第 11 次点击同步按钮时提示。每个用户实际的点击次数和
+是否已经处理弹窗仍保存在 `chrome.storage.local` 的 `jobChatRatingPromptState`
+中，不能写在静态配置文件里。
+
+开发时重新加载扩展不会重置该状态。需要重新测试弹窗时，在扩展结果页的
+DevTools Console 中执行：
+
+```js
+await chrome.storage.local.remove('jobChatRatingPromptState')
+```
+
+版本更新同样保留 `chrome.storage.local`，因此不会重新计数或再次提示。卸载扩展会
+清除该扩展的本地存储，重新安装后会从 0 开始计数。
+
+需要快速测试时，可以临时把 `src/runtime-config.js` 中的 `clickThreshold` 改为
+`0`，并删除已有状态；测试结束后恢复为 `10`。
 
 ## Chrome 商店打包
 
@@ -111,7 +140,7 @@ npm ci
 
 打包阶段使用锁定版本的 `esbuild` 压缩全部 JavaScript：删除注释和多余空白，并进行安全的语法压缩；不生成 source map，也不执行字符串加密、控制流改写等代码混淆。由于扩展的多个脚本通过全局函数协作，压缩过程会保留标识符名称，避免跨文件调用失效。源文件不会被修改，压缩只发生在临时打包目录中。
 
-命令完成后会输出 JavaScript 压缩前后的字节数。正式包还会把 `runtime-config.js` 中的 Debug 日志默认值关闭；可以使用以下命令检查压缩包完整性：
+命令完成后会输出 JavaScript 压缩前后的字节数。正式包还会把 `src/runtime-config.js` 中的 Debug 日志默认值关闭；可以使用以下命令检查压缩包完整性：
 
 ```bash
 unzip -t dist/job-chat-recorder-v{manifest版本号}.zip
@@ -145,6 +174,21 @@ npm run package:skip-ga4
 应为扩展使用独立 GA4 数据流，并定期轮换 Secret。完整事件、维度和 GA4 配置参见
 [`docs/ga4-analytics-plan.md`](docs/ga4-analytics-plan.md)。
 
+### 构建和 CI 检查
+
+本地构建命令会生成关闭 GA4 的验证包，不要求提供 Measurement ID 或 API Secret：
+
+```bash
+npm run build
+```
+
+CI 命令会检查 `src/` 和 `scripts/` 下全部 JavaScript 的语法，验证 manifest、HTML
+和打包清单引用的文件都存在且会进入发布包，然后执行一次完整构建：
+
+```bash
+npm run ci
+```
+
 ## 使用方式
 
 1. 打开 BOSS 直聘或猎聘页面，并确认已登录
@@ -159,23 +203,30 @@ npm run package:skip-ga4
 .
 ├── package.json
 ├── manifest.json
-├── shared-utils.js
-├── shared-records.js
-├── content-common.js
-├── boss-message-protocol.js
-├── boss-hook.js
-├── boss-extractor.js
-├── liepin-extractor.js
 ├── popup.html
-├── popup.js
-├── content.js
-├── analytics.js
-├── runtime-config.local.example.js
-├── background-database.js
-├── results-database.js
 ├── results.html
-├── results.js
+├── src/
+│   ├── analytics.js
+│   ├── background.js
+│   ├── background-database.js
+│   ├── boss-extractor.js
+│   ├── boss-hook.js
+│   ├── boss-message-protocol.js
+│   ├── boss-no-debug-guard.js
+│   ├── content.js
+│   ├── content-common.js
+│   ├── job-sync-core.js
+│   ├── liepin-extractor.js
+│   ├── popup.js
+│   ├── results.js
+│   ├── results-database.js
+│   ├── runtime-config.js
+│   ├── runtime-config.local.example.js
+│   ├── shared-records.js
+│   ├── shared-utils.js
+│   └── site-adapters.js
 ├── scripts/
+│   ├── check-extension.js
 │   ├── package-extension.js
 │   └── package-with-ga4.js
 ├── docs/
@@ -211,7 +262,10 @@ git push -u origin main
 
 本扩展只读取当前登录态可访问的招聘沟通数据。同步结果、联系人发送标识和发送进度保存在本地浏览器扩展存储中；岗位同步和批量发送日志只在当前结果页内存中临时展示。聊天内容、账号 ID、公司和岗位信息、Cookie、HTTP token、`wt2`、搜索关键词、完整 URL 及原始错误信息不会发送到统计服务。
 
-配置 GA4 后，扩展会直接向 Google Analytics 发送匿名安装、每日活跃、同步结果、保存记录数量和 CSV 下载数量，以及插件版本、招聘平台、页面类型、地区近似值、操作系统、系统架构和 Chrome 版本。匿名安装 ID 不来自招聘网站账号，也不用于识别自然人。用户可以在扩展弹窗中关闭“允许匿名使用统计”，关闭后不再发送新事件。
+配置 GA4 后，扩展会直接向 Google Analytics 发送匿名安装、每日活跃、同步结果、保存记录数量和 CSV 下载数量，以及插件版本、招聘平台、页面类型、地区近似值、操作系统、系统架构和 Chrome 版本。匿名安装 ID 不来自招聘网站账号，也不用于识别自然人。用户可以在结果页表格下方关闭“允许匿名使用统计”，关闭后不再发送新事件。
+
+“允许匿名使用统计”默认开启。用户主动关闭后，选择保存在
+`chrome.storage.local`，扩展更新不会重新开启。
 
 扩展卸载后无法继续执行代码，因此本实现不向 GA4 发送自定义卸载事件，卸载量继续以 Chrome Web Store 后台统计为准。
 

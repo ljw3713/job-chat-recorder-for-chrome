@@ -80,9 +80,9 @@
     try {
       const injectHook = () => {
         const protocol = document.createElement('script');
-        protocol.src = chrome.runtime.getURL('boss-message-protocol.js');
+        protocol.src = chrome.runtime.getURL('src/boss-message-protocol.js');
         const hook = document.createElement('script');
-        hook.src = chrome.runtime.getURL('boss-hook.js');
+        hook.src = chrome.runtime.getURL('src/boss-hook.js');
         hook.onload = () => hook.remove();
         protocol.onload = () => { protocol.remove(); (document.documentElement || document.head).appendChild(hook); };
         (document.documentElement || document.head).appendChild(protocol);

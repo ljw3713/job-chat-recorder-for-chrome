@@ -1,5 +1,8 @@
 {
   "scripts": {
+    "check": "node scripts/check-extension.js",
+    "build": "node scripts/package-extension.js --skip-ga4",
+    "ci": "npm run check && npm run build",
     "package": "node scripts/package-with-ga4.js",
     "package:skip-ga4": "node scripts/package-extension.js --skip-ga4"
   },

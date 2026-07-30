@@ -12,23 +12,24 @@ const skipGa4 = process.argv.includes('--skip-ga4');
 const packageFiles = [
   'manifest.json',
   'popup.html',
-  'popup.js',
   'results.html',
-  'results.js',
-  'results-database.js',
-  'background.js',
-  'background-database.js',
-  'analytics.js',
-  'runtime-config.js',
-  'shared-utils.js',
-  'shared-records.js',
-  'content-common.js',
-  'site-adapters.js',
-  'job-sync-core.js',
-  'boss-extractor.js',
-  'liepin-extractor.js',
-  'content.js',
-  'boss-hook.js',
+  'src/popup.js',
+  'src/results.js',
+  'src/results-database.js',
+  'src/background.js',
+  'src/background-database.js',
+  'src/analytics.js',
+  'src/runtime-config.js',
+  'src/shared-utils.js',
+  'src/shared-records.js',
+  'src/content-common.js',
+  'src/site-adapters.js',
+  'src/job-sync-core.js',
+  'src/boss-extractor.js',
+  'src/liepin-extractor.js',
+  'src/content.js',
+  'src/boss-hook.js',
+  'src/boss-message-protocol.js',
   'assets/icons/icon-16.png',
   'assets/icons/icon-32.png',
   'assets/icons/icon-48.png',
@@ -55,7 +56,7 @@ function copyPackageFiles() {
     fs.copyFileSync(sourcePath, targetPath);
   }
 
-  const runtimeConfigPath = path.join(stageDir, 'runtime-config.js');
+  const runtimeConfigPath = path.join(stageDir, 'src/runtime-config.js');
   const developmentConfig = fs.readFileSync(runtimeConfigPath, 'utf8');
   let releaseConfig = developmentConfig.replace('enableDebugLog: true', 'enableDebugLog: false');
   if (releaseConfig === developmentConfig) throw new Error('Unable to create release runtime config.');

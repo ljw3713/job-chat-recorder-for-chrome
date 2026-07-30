@@ -3,8 +3,6 @@ const btnText = document.getElementById('btnText');
 const errorBox = document.getElementById('error');
 const currentSiteBox = document.getElementById('currentSite');
 const overviewBtn = document.getElementById('overviewBtn');
-const analyticsEnabled = document.getElementById('analyticsEnabled');
-const analyticsHint = document.getElementById('analyticsHint');
 
 const SUPPORTED_SITES = [
   { key: 'boss', hostPattern: /(^|\.)zhipin\.com$/i, source: 'BOSS直聘' },
@@ -33,50 +31,6 @@ function setLoading(isLoading) {
   document.body.classList.toggle('loading', isLoading);
   btn.disabled = isLoading;
   btnText.textContent = isLoading ? '正在同步，请稍候...' : '同步当前聊天记录';
-}
-
-function setAnalyticsHint(configured) {
-  if (!analyticsHint) return;
-  analyticsHint.textContent = configured
-    ? '仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。'
-    : '当前构建尚未配置 GA4，不会发送统计数据。';
-}
-
-async function initializeAnalytics() {
-  if (!analyticsEnabled) return;
-  const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_ANALYTICS_STATUS' }).catch(() => null);
-  const status = response?.data || {};
-  analyticsEnabled.checked = status.enabled !== false;
-  setAnalyticsHint(Boolean(status.configured));
-  if (analyticsEnabled.checked) {
-    chrome.runtime.sendMessage({
-      type: 'JOB_CHAT_ANALYTICS_ACTIVE',
-      pageMode: 'popup'
-    }).catch(() => {});
-  }
-}
-
-if (analyticsEnabled) {
-  analyticsEnabled.addEventListener('change', async () => {
-    analyticsEnabled.disabled = true;
-    const enabled = analyticsEnabled.checked;
-    const response = await chrome.runtime.sendMessage({
-      type: 'JOB_CHAT_ANALYTICS_SET_ENABLED',
-      enabled
-    }).catch(() => null);
-    analyticsEnabled.disabled = false;
-    if (!response?.ok) {
-      analyticsEnabled.checked = !enabled;
-      return;
-    }
-    setAnalyticsHint(Boolean(response.data?.configured));
-    if (enabled) {
-      chrome.runtime.sendMessage({
-        type: 'JOB_CHAT_ANALYTICS_ACTIVE',
-        pageMode: 'popup'
-      }).catch(() => {});
-    }
-  });
 }
 
 async function refreshCurrentSiteHint() {
@@ -124,4 +78,7 @@ btn.addEventListener('click', async () => {
 });
 
 refreshCurrentSiteHint();
-initializeAnalytics();
+chrome.runtime.sendMessage({
+  type: 'JOB_CHAT_ANALYTICS_ACTIVE',
+  pageMode: 'popup'
+}).catch(() => {});

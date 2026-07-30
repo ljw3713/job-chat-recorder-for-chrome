@@ -44,7 +44,7 @@ GA4 Measurement Protocol 使用 HTTPS `POST` 上报，并要求 `api_secret`。G
 
 ### 扩展到 GA4 的请求格式
 
-当前 `analytics.js` 直接请求：
+当前 `src/analytics.js` 直接请求：
 
 ```text
 POST https://www.google-analytics.com/mp/collect
@@ -79,7 +79,7 @@ POST https://www.google-analytics.com/mp/collect
         "record_count_bucket": "11-50",
         "page_mode": "sync",
         "result": "success",
-        "extension_version": "5.1.0",
+        "extension_version": "5.2.0",
         "architecture": "arm64",
         "session_id": 1785400000000,
         "engagement_time_msec": 1
@@ -204,7 +204,7 @@ jobChatAnalyticsLastActiveDate
 
 | 参数 | 示例 | 说明 | GA4 配置 |
 |---|---|---|---|
-| `extension_version` | `5.1.0`、`5.1.0-dev` | `chrome.runtime.getManifest().version`；开发模式追加 `-dev` | 事件级自定义维度 |
+| `extension_version` | `5.2.0`、`5.2.0-dev` | `chrome.runtime.getManifest().version`；开发模式追加 `-dev` | 事件级自定义维度 |
 | `site` | `zhipin`、`liepin`、`mixed`、`none` | 招聘平台 | 事件级自定义维度 |
 | `page_mode` | `sync`、`overview`、`background` | 事件来源页面 | 事件级自定义维度 |
 | `result` | `success`、`failed`、`cancelled`、`empty` | 操作结果 | 事件级自定义维度 |
@@ -259,7 +259,7 @@ Google 官方列出了 `Country`、`Region`、`City`、`Operating system` 和
 
 ## 代码接入位置
 
-### 新增 `analytics.js`
+### 新增 `src/analytics.js`
 
 新增独立模块，负责：
 
@@ -277,16 +277,16 @@ Google 官方列出了 `Country`、`Region`、`City`、`Operating system` 和
 
 模块只在扩展自身页面和后台 Service Worker 中使用，不注入 BOSS 或猎聘网页。
 
-### `background.js`
+### `src/background.js`
 
 在 Service Worker 中接入：
 
-1. 使用 `importScripts()` 加载 `analytics.js`。
+1. 使用 `importScripts()` 加载同目录的 `analytics.js`。
 2. 监听 `chrome.runtime.onInstalled`：
    - 原因是 `install` 时生成安装 ID 并发送 `extension_installed`；
    - 原因是 `update` 时不重复计算安装；
    - 清除旧版本可能遗留的 `chrome.runtime.setUninstallURL()`。
-3. 监听统一消息 `JOB_CHAT_ANALYTICS_EVENT`，由 `results.js` 请求上报行为事件。
+3. 监听统一消息 `JOB_CHAT_ANALYTICS_EVENT`，由 `src/results.js` 请求上报行为事件。
 4. 在同步流程最终成功处发送 `sync_completed`。
 5. 在同步流程最终失败处发送 `sync_failed`，只使用标准化 `error_code`。
 
@@ -294,7 +294,7 @@ Google 官方列出了 `Country`、`Region`、`City`、`Operating system` 和
 
 - [Chrome runtime API](https://developer.chrome.com/docs/extensions/reference/api/runtime)
 
-### `results.js`
+### `src/results.js`
 
 接入以下现有交互点：
 
@@ -312,7 +312,7 @@ Google 官方列出了 `Country`、`Region`、`City`、`Operating system` 和
   - 调用一次每日去重的 `extension_active`；
   - `page_mode` 使用当前已有的 `sync` 或 `overview`。
 
-### `runtime-config.js`
+### `src/runtime-config.js`
 
 增加运行配置：
 
@@ -326,14 +326,14 @@ ga4ApiSecret
 `JOB_CHAT_GA4_MEASUREMENT_ID` 和 `JOB_CHAT_GA4_API_SECRET` 注入临时构建目录。
 API Secret 不提交到 Git，但最终仍存在于可被反编译的扩展包内。
 
-开发模式下，`background.js` 在加载 `runtime-config.js` 后自动尝试加载
-`runtime-config.local.js`。只有 `enableDebugLog=true` 时才执行本地覆盖。该文件：
+开发模式下，`src/background.js` 在加载同目录的 `runtime-config.js` 后自动尝试加载
+`src/runtime-config.local.js`。只有 `enableDebugLog=true` 时才执行本地覆盖。该文件：
 
 - 已加入 `.gitignore`；
 - 不在 `scripts/package-extension.js` 的正式包文件清单中；
 - 只覆盖 `analyticsEnabled`、`ga4MeasurementId` 和 `ga4ApiSecret`；
 - 修改后需要在 `chrome://extensions/` 重新加载扩展；
-- 对应的无密钥模板为 `runtime-config.local.example.js`。
+- 对应的无密钥模板为 `src/runtime-config.local.example.js`。
 
 本地文件缺失或配置为空时保持统计关闭，不影响扩展其他功能。
 
@@ -349,7 +349,7 @@ API Secret 不提交到 Git，但最终仍存在于可被反编译的扩展包�
 
 ### `scripts/package-extension.js`
 
-`analytics.js` 已加入 `packageFiles`。打包流程必须继续满足：
+`src/analytics.js` 已加入 `packageFiles`。打包流程必须继续满足：
 
 - 确保正式包启用 GA4 直连配置；
 - `npm run package` 启动 `scripts/package-with-ga4.js`；
@@ -425,9 +425,9 @@ error_code
 architecture
 ```
 
-工作区中的 `runtime-config.js` 默认设置 `enableDebugLog=true`，因此本地开发版发送的
-`extension_version` 会自动追加 `-dev`，例如 `5.1.0-dev`。正式打包脚本会将
-`enableDebugLog` 改为 `false`，正式包仍上报 `5.1.0`。不要直接把 `-dev` 写入
+工作区中的 `src/runtime-config.js` 默认设置 `enableDebugLog=true`，因此本地开发版发送的
+`extension_version` 会自动追加 `-dev`，例如 `5.2.0-dev`。正式打包脚本会将
+`enableDebugLog` 改为 `false`，正式包仍上报 `5.2.0`。不要直接把 `-dev` 写入
 `manifest.version`，该字段只允许一至四段数字。
 
 GA4 标准版支持的自定义定义数量有限，应优先使用内置的地区、系统和浏览器维度，避免
@@ -499,7 +499,7 @@ extension_installed
 
 结果可以区分下载选中记录和下载全部记录。
 
-### 查看“美国、5.1.0、macOS”用户
+### 查看“美国、5.2.0、macOS”用户
 
 进入“探索 → 自由形式”，配置：
 
@@ -507,7 +507,7 @@ extension_installed
 - 值：`活跃用户数`、`事件数`、`record_count` 总和；
 - 筛选：`Country = United States`；
 - 筛选：`Operating system = MacOS`；
-- 筛选：`extension_version = 5.1.0`。
+- 筛选：`extension_version = 5.2.0`。
 
 可以继续增加：
 
@@ -573,8 +573,8 @@ extension_installed
 9. 构建日志不输出 API Secret，并明确记录最终扩展包可被提取的风险。
 10. 未使用 `--skip-ga4` 时，两项构建变量均为必填，缺少任意一项都会打包失败。
 11. 使用 `--skip-ga4` 时忽略已有 GA4 变量，并生成统计关闭的包。
-12. 开发模式可以读取被 Git 忽略的 `runtime-config.local.js`。
-13. 正式包不包含 `runtime-config.local.js` 或本地 Secret。
+12. 开发模式可以读取被 Git 忽略的 `src/runtime-config.local.js`。
+13. 正式包不包含 `src/runtime-config.local.js` 或本地 Secret。
 14. 不发送自定义卸载事件，卸载量以 Chrome Web Store 后台为准。
 15. 断网或 GA4 异常时，保存、下载和同步功能仍正常。
 16. Chrome 商店隐私披露和项目隐私政策与实际统计字段一致。
