@@ -52,15 +52,16 @@ const CONTENT_SCRIPT_FILES = [
   'content.js'
 ];
 let activeBossSendTabId = null;
+let activeLiepinSendTabId = null;
 let activeJobDetailRefreshTabId = null;
 let activeJobDetailRefreshRunId = null;
 let activeSyncReloadCancelled = false;
 let activeExtractionProgressContext = null;
-let bossSendLogQueue = Promise.resolve();
+let sendProgressSaveQueue = Promise.resolve();
 let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
 
-chrome.storage.local.remove(['jobChatRequestLogs', 'jobChatRefreshLogs']).catch(() => {});
+chrome.storage.local.remove(['jobChatRequestLogs', 'jobChatRefreshLogs', 'jobChatBossSendLogs']).catch(() => {});
 
 function unsupportedMessage(tabUrl) {
   const hostname = getHostname(tabUrl) || tabUrl || '当前页面';
@@ -141,6 +142,46 @@ async function updateBossRecordAfterSent(recordKey, message) {
           showText: message,
           msgTime: sentAt.getTime()
         }
+      }
+    };
+  });
+  if (changed) await chrome.storage.local.set({ jobChatRecords: nextRecords });
+}
+
+async function updateLiepinRecordFromSendProgress(progress) {
+  const recordKey = String(progress?.recordKey || '');
+  if (!recordKey) return;
+  const oppositeUserId = String(progress?.oppositeUserId || '').trim();
+  const sentMessage = String(progress?.sentMessage || '');
+  const sent = (progress?.status === '成功' || progress?.status === '已发送') && sentMessage;
+  if (!oppositeUserId && !sent) return;
+  const store = await chrome.storage.local.get(['jobChatRecords']);
+  const records = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
+  const rawTimestamp = Number(progress?.msgTime || Date.now());
+  const timestamp = Number.isFinite(rawTimestamp) && rawTimestamp > 0 ? rawTimestamp : Date.now();
+  const sentAt = new Date(timestamp);
+  const updatedDate = localDateTime(sentAt);
+  let changed = false;
+  const nextRecords = records.map((record) => {
+    if (String(record?.recordKey || '') !== recordKey) return record;
+    changed = true;
+    const liepin = {
+      ...(record.liepin || {}),
+      ...(oppositeUserId ? { oppositeUserId } : {})
+    };
+    if (!sent) return { ...record, liepin };
+    return {
+      ...record,
+      time: updatedDate,
+      updatedDate,
+      updatedAt: sentAt.toISOString(),
+      lastMessage: sentMessage,
+      messageStatus: '0',
+      liepin: {
+        ...liepin,
+        latestMsgId: String(progress?.msgId || liepin.latestMsgId || ''),
+        latestMsgTime: timestamp,
+        oppositeRead: '0'
       }
     };
   });
@@ -634,6 +675,43 @@ async function sendBossBatch(message) {
   return { ok: true, total: targets.length };
 }
 
+async function sendLiepinBatch(message) {
+  const keys = new Set(Array.isArray(message?.recordKeys) ? message.recordKeys.map(String) : []);
+  if (!keys.size) throw new Error('没有选中记录。');
+  const store = await chrome.storage.local.get(['jobChatRecords']);
+  const records = (Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [])
+    .filter((record) => keys.has(String(record.recordKey)));
+  if (records.length !== keys.size) throw new Error('部分选中记录已不存在，请刷新总览后重试。');
+  if (records.some((record) => record.siteKey !== 'liepin' && record.sourceName !== '猎聘')) {
+    throw new Error('选中记录包含 BOSS，不能发送整个批次。');
+  }
+  const tabs = await chrome.tabs.query({ url: ['https://*.liepin.com/*'] });
+  if (!tabs.length) throw new Error('没有打开猎聘标签页，请打开并登录后重试。');
+  const tab = [...tabs].sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
+  if (!tab?.id) throw new Error('无法选择猎聘标签页。');
+  const targets = records.map((record) => ({
+    recordKey: record.recordKey,
+    liepin: record.liepin || {}
+  }));
+  const response = await sendBossBatchToTab(tab.id, {
+    type: 'LIEPIN_SEND_BATCH',
+    targets,
+    message: message.message,
+    rate: message.rate
+  });
+  if (!response?.ok) throw new Error(response?.error || '无法启动猎聘发送任务，请刷新猎聘页面后重试。');
+  activeLiepinSendTabId = tab.id;
+  return { ok: true, total: targets.length };
+}
+
+async function sendChatBatch(message) {
+  const siteKey = String(message?.siteKey || '');
+  if (activeBossSendTabId || activeLiepinSendTabId) throw new Error('已有发送批次正在运行。');
+  if (siteKey === 'boss') return sendBossBatch(message);
+  if (siteKey === 'liepin') return sendLiepinBatch(message);
+  throw new Error('无法确定选中记录所属网站。');
+}
+
 async function stopBossBatch() {
   if (!activeBossSendTabId) return { ok: true };
   const tabId = activeBossSendTabId;
@@ -642,6 +720,16 @@ async function stopBossBatch() {
   }));
   if (!response?.ok) throw new Error(response?.error || '无法停止发送任务。');
   return { ok: true };
+}
+
+async function stopChatBatch() {
+  if (activeLiepinSendTabId) {
+    const tabId = activeLiepinSendTabId;
+    const response = await sendMessageToTab(tabId, { type: 'LIEPIN_STOP_BATCH' });
+    if (!response?.ok) throw new Error(response?.error || '无法停止猎聘发送任务。');
+    return { ok: true };
+  }
+  return stopBossBatch();
 }
 
 async function ensureResultsTab() {
@@ -1078,31 +1166,72 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'JOB_CHAT_SEND_BATCH') {
+    sendChatBatch(message).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
   if (message?.type === 'BOSS_STOP_BATCH') {
     stopBossBatch().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_STOP_SEND') {
+    stopChatBatch().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
 
   if (message?.type === 'BOSS_SEND_PROGRESS') {
     const { sentMessage = '', ...progress } = message.progress || {};
     if (progress.type === 'BOSS_SEND_FINISHED' || progress.type === 'BOSS_SEND_ERROR' || progress.type === 'BOSS_SEND_STOPPED') activeBossSendTabId = null;
-    const updateRecord = progress.status === '成功' || progress.status === '已发送'
-      ? updateBossRecordAfterSent(progress.recordKey, String(sentMessage || ''))
-      : Promise.resolve();
-    updateRecord
-      .then(() => chrome.storage.local.set({ jobChatBossSendProgress: { ...progress, updatedAt: new Date().toISOString() } }))
+    sendProgressSaveQueue = sendProgressSaveQueue
+      .catch(() => {})
+      .then(() => (progress.status === '成功' || progress.status === '已发送'
+        ? updateBossRecordAfterSent(progress.recordKey, String(sentMessage || ''))
+        : Promise.resolve()))
+      .then(() => chrome.storage.local.set({ jobChatBossSendProgress: { ...progress, updatedAt: new Date().toISOString() } }));
+    sendProgressSaveQueue
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
 
   if (message?.type === 'BOSS_SEND_LOG') {
-    bossSendLogQueue = bossSendLogQueue.then(() => chrome.storage.local.get(['jobChatBossSendLogs'])).then((store) => {
-      const logs = Array.isArray(store.jobChatBossSendLogs) ? store.jobChatBossSendLogs : [];
-      logs.push({ time: new Date().toISOString(), message: String(message.message || '') });
-      return chrome.storage.local.set({ jobChatBossSendLogs: logs.slice(-200) });
-    });
-    bossSendLogQueue.then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_SEND_LOG_EVENT',
+      entry: { time: new Date().toISOString(), siteKey: 'boss', message: String(message.message || '') }
+    }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === 'LIEPIN_SEND_PROGRESS') {
+    const progress = message.progress || {};
+    if (progress.type === 'LIEPIN_SEND_FINISHED' || progress.type === 'LIEPIN_SEND_ERROR' || progress.type === 'LIEPIN_SEND_STOPPED') {
+      activeLiepinSendTabId = null;
+    }
+    sendProgressSaveQueue = sendProgressSaveQueue
+      .catch(() => {})
+      .then(() => updateLiepinRecordFromSendProgress(progress))
+      .then(() => chrome.storage.local.set({
+        jobChatBossSendProgress: {
+          ...progress,
+          siteKey: 'liepin',
+          updatedAt: new Date().toISOString()
+        }
+      }));
+    sendProgressSaveQueue
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'LIEPIN_SEND_LOG') {
+    chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_SEND_LOG_EVENT',
+      entry: { time: new Date().toISOString(), siteKey: 'liepin', message: String(message.message || '') }
+    }).catch(() => {});
+    sendResponse({ ok: true });
     return true;
   }
 

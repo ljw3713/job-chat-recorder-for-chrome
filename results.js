@@ -5,7 +5,6 @@ const copyTableBtn = document.getElementById('copyTableBtn');
 const copyJsonBtn = document.getElementById('copyJsonBtn');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
 const updateDetailsBtn = document.getElementById('updateDetailsBtn');
-const downloadJsonBtn = document.getElementById('downloadJsonBtn');
 const todayOnly = document.getElementById('todayOnly');
 const sourceFilter = document.getElementById('sourceFilter');
 const companyFilter = document.getElementById('companyFilter');
@@ -110,10 +109,12 @@ let extractionStatus = null;
 let allRecords = [];
 let currentRecords = [];
 let ignoredRecords = [];
+let companyProfiles = {};
 let selectedKeys = new Set();
 let queryValue = '';
 let queryTimer = null;
 let sendRunning = false;
+let sendSiteKey = '';
 let sendStatuses = new Map();
 let sendLogs = [];
 let detailsUpdating = false;
@@ -248,7 +249,7 @@ function isInterruptibleContext() {
 function configurePageMode() {
   if (mode === 'sync') {
     saveBtn.style.display = '';
-    if (requestLogsBtn) requestLogsBtn.style.display = '';
+    if (requestLogsBtn) requestLogsBtn.style.display = sendLogEnabled ? '' : 'none';
     if (importCsvBtn) importCsvBtn.style.display = 'none';
     overviewBtn.textContent = '查看总记录';
     pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。备注列可双击编辑，岗位列可悬浮查看详情。';
@@ -832,6 +833,29 @@ function showJobInfoCard(target, record) {
       : (empty ? '暂无岗位详情，可勾选后点击“更新详情”。' : '')));
   const summary = [info.salary, info.location, info.experience, info.education].filter(Boolean).join(' · ');
   jobInfoCard.innerHTML = `<h3>${escapeHtml(info.title || record.jobName || '岗位详情')}</h3><div class="job-info-meta">${escapeHtml(summary)}</div><div class="keywords">${info.skills.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join('')}</div><p class="detail">${escapeHtml(info.description || status)}</p><div class="job-info-meta">${escapeHtml(info.address ? `地址：${info.address}` : '')}${escapeHtml(info.fetchedAt ? ` 最近获取：${info.fetchedAt}` : '')}</div>`;
+  positionInfoCard(target);
+}
+
+function showCompanyInfoCard(target, record) {
+  if (!jobInfoCard) return;
+  clearTimeout(jobInfoHideTimer);
+  const companyKey = normalizeText(record?.companyKey);
+  const profile = companyKey && companyProfiles[companyKey] && typeof companyProfiles[companyKey] === 'object'
+    ? companyProfiles[companyKey]
+    : null;
+  const name = normalizeText(profile?.name || record?.companyName || '公司详情');
+  const summary = [
+    normalizeText(profile?.industry) ? `行业：${normalizeText(profile.industry)}` : '',
+    normalizeText(profile?.employeeScale) ? `规模：${normalizeText(profile.employeeScale)}` : ''
+  ].filter(Boolean).join(' · ');
+  const description = globalThis.JobChatRecords.normalizeMultilineText(profile?.description)
+    || (companyKey ? '暂无公司介绍。' : '暂无公司详情，请先同步岗位信息。');
+  jobInfoCard.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="job-info-meta">${escapeHtml(summary)}</div><p class="detail">${escapeHtml(description)}</p>`;
+  positionInfoCard(target);
+}
+
+function positionInfoCard(target) {
+  if (!jobInfoCard) return;
   const rect = target.getBoundingClientRect();
   jobInfoCard.classList.add('show');
   const cardRect = jobInfoCard.getBoundingClientRect();
@@ -860,17 +884,22 @@ if (jobInfoCard) {
   jobInfoCard.addEventListener('focusout', scheduleJobInfoCardHide);
 }
 
-if (updateDetailsLog) {
-  updateDetailsLog.addEventListener('keydown', (event) => {
+function bindLogSelectAll(element) {
+  if (!element) return;
+  element.addEventListener('keydown', (event) => {
     if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a') return;
     event.preventDefault();
     const range = document.createRange();
-    range.selectNodeContents(updateDetailsLog);
+    range.selectNodeContents(element);
     const selection = window.getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
   });
 }
+
+bindLogSelectAll(requestLogsBox);
+bindLogSelectAll(updateDetailsLog);
+bindLogSelectAll(sendMessageLog);
 
 function detailRefreshStatusText(status) {
   if (status?.status === '同步中') return '同步中';
@@ -1057,8 +1086,12 @@ async function startOrStopDetailRefresh() {
 }
 
 function selectedRecords() { return allRecords.filter((record) => selectedKeys.has(record.recordKey)); }
+function recordSiteKey(record) {
+  return record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : (record?.sourceName === 'BOSS直聘' ? 'boss' : ''));
+}
 function isSendable(record) {
-  if (record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘') return '非 BOSS 记录';
+  const siteKey = recordSiteKey(record);
+  if (siteKey !== 'boss' && siteKey !== 'liepin') return '暂不支持该网站';
   return '';
 }
 function sendStatusText(progress) {
@@ -1068,11 +1101,20 @@ function sendStatusText(progress) {
   return '等待';
 }
 function renderSendModal() {
-  const records = selectedRecords(); const blocked = records.filter(isSendable); const sendable = records.length - blocked.length;
-  sendMessageTitle.textContent = `已选 ${records.length} 条 · 可发送 ${sendable} 条 · 不可发送 ${blocked.length} 条`;
-  sendMessageSummary.textContent = sendRunning ? '发送任务仍在运行；关闭窗口不会取消发送。' : '仅向当前已登录 BOSS 账号下的已有联系人发送纯文本消息。';
+  const records = selectedRecords();
+  const siteKeys = new Set(records.map(recordSiteKey).filter(Boolean));
+  const mixedSites = siteKeys.size > 1;
+  const blockedCount = mixedSites ? records.length : records.filter(isSendable).length;
+  const sendable = records.length - blockedCount;
+  const siteName = siteKeys.size === 1 && siteKeys.has('liepin') ? '猎聘' : 'BOSS直聘';
+  sendMessageTitle.textContent = `已选 ${records.length} 条 · 可发送 ${sendable} 条 · 不可发送 ${blockedCount} 条`;
+  sendMessageSummary.textContent = sendRunning
+    ? '发送任务仍在运行；关闭窗口不会取消发送。'
+    : (siteKeys.size > 1
+      ? '同一批次只能选择同一个招聘网站的记录。'
+      : `仅向当前已登录${siteName}账号下的已有联系人发送纯文本消息。`);
   sendMessageTargets.innerHTML = `<table><thead><tr><th>公司</th><th>岗位</th><th>招聘者</th><th>更新时间</th><th>发送状态</th><th>备注</th></tr></thead><tbody>${records.map((record) => {
-    const reason = isSendable(record);
+    const reason = mixedSites ? '不能混合不同网站发送' : isSendable(record);
     const progress = sendStatuses.get(record.recordKey);
     const note = progress?.errorMessage || reason || '';
     return `<tr><td>${escapeHtml(record.companyName)}</td><td>${escapeHtml(record.jobName)}</td><td>${escapeHtml(recruiterInfo(record))}</td><td>${escapeHtml(displayDate(record.updatedDate))}</td><td>${escapeHtml(sendStatusText(progress))}</td><td>${escapeHtml(note)}</td></tr>`;
@@ -1123,7 +1165,7 @@ function renderTable() {
           <tr>
             <td class="select-cell"><input class="row-select" type="checkbox" value="${escapeHtml(r.recordKey)}" /></td>
             <td class="source-cell">${escapeHtml(r.sourceName)}</td>
-            <td class="company-cell">${escapeHtml(r.companyName)}</td>
+            <td class="company-cell company-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看公司详情">${escapeHtml(r.companyName)}</td>
             <td class="job-cell job-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看岗位详情">${escapeHtml(r.jobName)}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.applicationDate))}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.updatedDate))}</td>
@@ -1136,6 +1178,14 @@ function renderTable() {
     </table>`;
   bindEditableCells();
   bindJobDetailNotSyncedFilter();
+  tableBox.querySelectorAll('.company-hover-target').forEach((target) => {
+    const record = allRecords.find((item) => item.recordKey === target.dataset.key);
+    if (!record) return;
+    target.addEventListener('mouseenter', () => showCompanyInfoCard(target, record));
+    target.addEventListener('mouseleave', scheduleJobInfoCardHide);
+    target.addEventListener('focus', () => showCompanyInfoCard(target, record));
+    target.addEventListener('blur', scheduleJobInfoCardHide);
+  });
   tableBox.querySelectorAll('.job-hover-target').forEach((target) => {
     const record = allRecords.find((item) => item.recordKey === target.dataset.key);
     if (!record) return;
@@ -1150,6 +1200,9 @@ async function loadAndRenderLatest() {
   const result = await ResultsDb.loadResultsState();
   extractionStatus = result.jobChatExtractionStatus || null;
   ignoredRecords = Array.isArray(result.jobChatIgnoredRecords) ? result.jobChatIgnoredRecords.map(normalizeRecord) : [];
+  companyProfiles = result.jobChatCompanyProfiles && typeof result.jobChatCompanyProfiles === 'object'
+    ? result.jobChatCompanyProfiles
+    : {};
 
   if (mode === 'sync') {
     latestData = result.jobChatPendingRecords || result.bossChatStatsLatest || { total: 0, records: [] };
@@ -1225,13 +1278,13 @@ async function importCsvFile(file) {
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (changes.jobChatExtractionStatus || changes.bossChatStatsLatest || changes.jobChatRecords || changes.jobChatPendingRecords || changes.jobChatIgnoredRecords) {
+  if (changes.jobChatExtractionStatus || changes.bossChatStatsLatest || changes.jobChatRecords || changes.jobChatPendingRecords || changes.jobChatIgnoredRecords || changes.jobChatCompanyProfiles) {
     loadAndRenderLatest();
   }
   if (changes.jobChatBossSendProgress) {
     const progress = changes.jobChatBossSendProgress.newValue || {};
     if (progress.recordKey) sendStatuses.set(progress.recordKey, progress);
-    if (progress.type === 'BOSS_SEND_ERROR') {
+    if (progress.type === 'BOSS_SEND_ERROR' || progress.type === 'LIEPIN_SEND_ERROR') {
       selectedRecords().forEach((record) => {
         const current = sendStatuses.get(record.recordKey);
         if (sendStatusText(current) === '等待') {
@@ -1244,7 +1297,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         }
       });
     }
-    if (progress.type === 'BOSS_SEND_FINISHED' || progress.type === 'BOSS_SEND_ERROR' || progress.type === 'BOSS_SEND_STOPPED') { sendRunning = false; setSendControls(false); }
+    if (['BOSS_SEND_FINISHED', 'BOSS_SEND_ERROR', 'BOSS_SEND_STOPPED', 'LIEPIN_SEND_FINISHED', 'LIEPIN_SEND_ERROR', 'LIEPIN_SEND_STOPPED'].includes(progress.type)) {
+      sendRunning = false;
+      sendSiteKey = '';
+      setSendControls(false);
+    }
     if (sendMessageModal?.classList.contains('show')) renderSendModal();
     updateDeleteButton();
   }
@@ -1260,15 +1317,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
     }
   }
-  if (changes.jobChatBossSendLogs) {
-    if (sendLogEnabled) {
-      sendLogs = Array.isArray(changes.jobChatBossSendLogs.newValue) ? changes.jobChatBossSendLogs.newValue : [];
-      if (sendMessageModal?.classList.contains('show')) renderSendLog();
-    }
-  }
 });
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'JOB_CHAT_SEND_LOG_EVENT') {
+    if (!sendLogEnabled) return;
+    sendLogs = [...sendLogs, {
+      time: new Date().toISOString(),
+      ...(message.entry || {})
+    }].slice(-200);
+    if (sendMessageModal?.classList.contains('show')) renderSendLog();
+    return;
+  }
   if (message?.type !== 'JOB_CHAT_LOG_EVENT') return;
   if (message.logType === 'clear') {
     detailRefreshLogs = [];
@@ -1403,15 +1463,12 @@ if (sendMessageBtn) sendMessageBtn.addEventListener('click', async () => {
     updateDeleteButton();
   }
   sendStatuses = new Map();
+  const openingSiteKeys = new Set(selectedRecords().map(recordSiteKey).filter(Boolean));
+  sendSiteKey = openingSiteKeys.size === 1 ? [...openingSiteKeys][0] : '';
   sendMessageText.value = '';
   sendMessageCount.textContent = '0 / 1000';
-  sendMessageRate.value = String(await ResultsDb.loadBossSendRate());
-  if (sendLogEnabled) {
-    const store = await chrome.storage.local.get(['jobChatBossSendLogs']);
-    sendLogs = Array.isArray(store.jobChatBossSendLogs) ? store.jobChatBossSendLogs : [];
-  } else {
-    sendLogs = [];
-  }
+  sendMessageRate.value = String(await ResultsDb.loadSendRate(sendSiteKey || 'boss'));
+  sendLogs = [];
   renderSendModal();
   sendMessageModal.classList.add('show');
 });
@@ -1419,12 +1476,12 @@ if (sendMessageText) sendMessageText.addEventListener('input', () => { sendMessa
 if (sendMessageRate) sendMessageRate.addEventListener('change', async () => {
   const inputRate = Number(sendMessageRate.value);
   const rate = Number.isFinite(inputRate) ? Math.max(1, Math.floor(inputRate)) : 10;
-  sendMessageRate.value = String(rate); await ResultsDb.saveBossSendRate(rate);
+  sendMessageRate.value = String(rate); await ResultsDb.saveSendRate(sendSiteKey || 'boss', rate);
 });
 if (startSendMessageBtn) startSendMessageBtn.addEventListener('click', async () => {
   if (sendRunning) {
     startSendMessageBtn.disabled = true;
-    const response = await chrome.runtime.sendMessage({ type: 'BOSS_STOP_BATCH' });
+    const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_STOP_SEND' });
     if (!response?.ok) alert(response?.error || '无法停止发送任务。');
     startSendMessageBtn.disabled = false;
     return;
@@ -1433,12 +1490,23 @@ if (startSendMessageBtn) startSendMessageBtn.addEventListener('click', async () 
   const records = selectedRecords();
   if (!message) { alert('请输入要发送的消息。'); return; }
   if (!records.length) { alert('没有选中记录。'); return; }
-  if (records.some((record) => record.siteKey !== 'boss' && record.sourceName !== 'BOSS直聘')) { alert('选中记录包含猎聘，不能发送整个批次。'); return; }
+  const siteKeys = new Set(records.map(recordSiteKey));
+  if (siteKeys.size !== 1 || !['boss', 'liepin'].includes([...siteKeys][0])) {
+    alert('请选择同一个招聘网站的记录后再发送。');
+    return;
+  }
+  sendSiteKey = [...siteKeys][0];
   const inputRate = Number(sendMessageRate.value);
   const rate = Number.isFinite(inputRate) ? Math.max(1, Math.floor(inputRate)) : 10;
-  await ResultsDb.saveBossSendRate(rate);
-  sendRunning = true; sendLogs = []; await chrome.storage.local.set({ jobChatBossSendLogs: [] }); setSendControls(true); renderSendModal();
-  const response = await chrome.runtime.sendMessage({ type: 'BOSS_SEND_BATCH', recordKeys: records.map((record) => record.recordKey), message, rate });
+  await ResultsDb.saveSendRate(sendSiteKey, rate);
+  sendRunning = true; sendLogs = []; setSendControls(true); renderSendModal();
+  const response = await chrome.runtime.sendMessage({
+    type: 'JOB_CHAT_SEND_BATCH',
+    siteKey: sendSiteKey,
+    recordKeys: records.map((record) => record.recordKey),
+    message,
+    rate
+  });
   if (!response?.ok) {
     const errorMessage = response?.error || '无法启动发送任务。';
     records.forEach((record) => {
@@ -1452,6 +1520,7 @@ if (startSendMessageBtn) startSendMessageBtn.addEventListener('click', async () 
       }
     });
     sendRunning = false;
+    sendSiteKey = '';
     setSendControls(false);
     renderSendModal();
     alert(errorMessage);
@@ -1563,16 +1632,6 @@ downloadCsvBtn.addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = url;
   a.download = `job-chat-records-${mode}-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-});
-
-downloadJsonBtn.addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(toOutputRows(), null, 2)], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `job-chat-records-${mode}-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
 });

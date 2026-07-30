@@ -497,6 +497,10 @@
         line-height: 1.5;
         white-space: pre-wrap;
       }
+      .log-box:focus {
+        outline: 2px solid #14b8a6;
+        outline-offset: 2px;
+      }
       .job-info-card {
         position: fixed;
         display: none;
@@ -627,7 +631,6 @@
             <input id="todayOnly" type="checkbox" />
             今日沟通
           </label>
-          <button id="downloadJsonBtn" class="secondary">下载 JSON</button>
           <button id="importCsvBtn" class="secondary" style="display: none">
             导入 CSV
           </button>
@@ -751,7 +754,7 @@
           </label>
         </div>
         <div class="hint toolbar-hint">
-          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，岗位列可悬浮查看详情。
+          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，公司和岗位列可悬浮查看详情。
         </div>
       </div>
       <div id="pageHint" class="hint"></div>
@@ -788,7 +791,7 @@
           <button id="closeRequestLogsModalBtn" class="light">关闭</button>
         </div>
         <div class="modal-body">
-          <pre id="requestLogsBox" class="log-box">暂无请求日志。</pre>
+          <pre id="requestLogsBox" class="log-box" tabindex="0">暂无请求日志。</pre>
         </div>
       </div>
     </div>
@@ -817,7 +820,7 @@
           </div>
           <p id="sendMessageSummary" class="send-summary"></p>
           <div id="sendMessageTargets" class="send-targets"></div>
-          <pre id="sendMessageLog" class="send-log" style="display: none">
+          <pre id="sendMessageLog" class="send-log" tabindex="0" style="display: none">
 尚未开始发送。</pre
           >
         </div>

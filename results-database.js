@@ -176,7 +176,14 @@
   }
 
   async function loadResultsState() {
-    return chrome.storage.local.get(['jobChatPendingRecords', 'jobChatExtractionStatus', 'jobChatRecords', 'bossChatStatsLatest', 'jobChatIgnoredRecords']);
+    return chrome.storage.local.get([
+      'jobChatPendingRecords',
+      'jobChatExtractionStatus',
+      'jobChatRecords',
+      'bossChatStatsLatest',
+      'jobChatIgnoredRecords',
+      'jobChatCompanyProfiles'
+    ]);
   }
 
   async function saveSyncRecords(latestData, records) {
@@ -228,6 +235,21 @@
     return normalizeBossSendRate(store.jobChatBossSendRate);
   }
   async function saveBossSendRate(value) { await chrome.storage.local.set({ jobChatBossSendRate: normalizeBossSendRate(value) }); }
+  async function loadSendRate(siteKey) {
+    const store = await chrome.storage.local.get(['jobChatSendRates', 'jobChatBossSendRate']);
+    const rates = store.jobChatSendRates && typeof store.jobChatSendRates === 'object'
+      ? store.jobChatSendRates
+      : {};
+    return normalizeBossSendRate(rates[siteKey] ?? store.jobChatBossSendRate);
+  }
+  async function saveSendRate(siteKey, value) {
+    const store = await chrome.storage.local.get(['jobChatSendRates']);
+    const rates = store.jobChatSendRates && typeof store.jobChatSendRates === 'object'
+      ? { ...store.jobChatSendRates }
+      : {};
+    rates[siteKey] = normalizeBossSendRate(value);
+    await chrome.storage.local.set({ jobChatSendRates: rates });
+  }
 
   globalThis.JobChatResultsDb = {
     tsv,
@@ -244,6 +266,8 @@
     loadSyncRateSettings,
     saveSyncRateSettings,
     loadBossSendRate,
-    saveBossSendRate
+    saveBossSendRate,
+    loadSendRate,
+    saveSendRate
   };
 })();

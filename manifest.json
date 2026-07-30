@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "直聘|猎聘 沟通助手",
-  "version": "3.1.0",
+  "version": "4.0.0",
   "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
   "permissions": [
     "activeTab",
@@ -13,7 +13,8 @@
   "host_permissions": [
     "https://*.liepin.com/*",
     "https://*.zhipin.com/*",
-    "https://api-c.liepin.com/*"
+    "https://api-c.liepin.com/*",
+    "https://api-im.liepin.com/*"
   ],
   "action": {
     "default_title": "直聘|猎聘 沟通助手",

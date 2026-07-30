@@ -458,6 +458,7 @@ record.messageStatus
 {
   "imId": "",
   "oppositeImId": "",
+  "oppositeUserId": "",
   "latestMsgId": "",
   "latestMsgTime": "",
   "oppositeRead": "",
@@ -477,6 +478,7 @@ record.messageStatus
 | ------------------------- | ------------------------------------------ |
 | `liepin.imId`             | `item.imId` → 当前登录 `imId`              |
 | `liepin.oppositeImId`     | `item.oppositeImId` → 已有记录值           |
+| `liepin.oppositeUserId`   | `item.oppositeUserId` → 已有记录值         |
 | `liepin.latestMsgId`      | `item.latestMsgId`                         |
 | `liepin.latestMsgTime`    | `item.latestMsgTime`                       |
 | `liepin.oppositeRead`     | `item.oppositeRead`                        |
@@ -491,6 +493,11 @@ record.messageStatus
 | `liepin.jobPreview`       | 规范化后的岗位预览字段                     |
 
 构建更新记录时会先展开 `existingRecord` 和 `existingRecord.liepin`，因此原记录中未被本轮覆盖的字段会保留。
+
+普通同步不会仅因旧记录缺少 `oppositeUserId` 就把它计入待更新列表；记录因消息或
+岗位本来需要更新时会顺带保存该字段。手动同步岗位时会从联系人列表补全，发送时还会
+通过聊天列表兜底。批量发送的接口、缓存和失败处理见
+[猎聘批量发送文本消息](liepin_send_msg.md)。
 
 ## 阶段性保存、限速与取消
 

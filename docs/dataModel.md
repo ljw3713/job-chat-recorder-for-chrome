@@ -316,6 +316,7 @@ JSON 和 CSV 的“内部数据”，用于恢复同步和发送功能。
 {
   "imId": "",
   "oppositeImId": "",
+  "oppositeUserId": "",
   "latestMsgId": "",
   "latestMsgTime": "",
   "oppositeRead": "",
@@ -343,6 +344,7 @@ JSON 和 CSV 的“内部数据”，用于恢复同步和发送功能。
 |---|---|
 | `imId` | 当前登录用户的猎聘 IM ID |
 | `oppositeImId` | 聊天对端 IM ID；稳定匹配和 `recordKey` |
+| `oppositeUserId` | 聊天对端用户 ID；猎聘发送文本消息使用 |
 | `latestMsgId` | 最近消息 ID；判断记录是否更新 |
 | `latestMsgTime` | 最近消息时间 |
 | `oppositeRead` | 对端读取状态 |
@@ -392,8 +394,9 @@ chrome.storage.local.jobChatCompanyProfiles
 | `industry` | 行业 |
 | `description` | 公司介绍 |
 
-聊天记录只通过 `record.companyKey` 引用公司资料。当前结果页、JSON 和 CSV 都不导出
-`jobChatCompanyProfiles`；JSON 只导出记录上的 `companyKey`。
+聊天记录只通过 `record.companyKey` 引用公司资料。结果页通过该引用在公司列悬浮卡中
+显示公司名称、行业、规模和介绍。JSON 和 CSV 都不导出 `jobChatCompanyProfiles`；
+JSON 只导出记录上的 `companyKey`。
 
 ## 10. 页面表格模型
 
@@ -418,7 +421,7 @@ chrome.storage.local.jobChatCompanyProfiles
 
 ## 11. JSON 输出模型
 
-JSON 预览、复制 JSON 和下载 JSON 使用同一结构：
+JSON 预览和复制 JSON 使用同一结构：
 
 ```json
 [
@@ -729,6 +732,7 @@ jobChatPreparedSourceList
 | `jobChatBossFriendListCapture` | object | BOSS 页面捕获的联系人列表响应 | 否 |
 | `jobChatRefreshProgress` | object | 总览页单条岗位详情更新进度 | 否 |
 | `jobChatBossSendProgress` | object | 批量发送单条进度 | 否 |
+| `jobChatLiepinImClientIds` | object | 按猎聘 `imId` 保存的 `imClientId` | 否 |
 
 `jobChatRefreshProgress` 的典型结构：
 
@@ -751,7 +755,8 @@ jobChatPreparedSourceList
 其中 `status` 可能为“等待同步”“同步中”“重试中”“成功”“失败”或“已停止”。
 `record` 仅在单条岗位详情已经形成可保存结果时出现。
 
-`jobChatBossSendProgress` 保存最近一次发送事件，典型字段包括：
+`jobChatBossSendProgress` 是兼容旧版本保留的存储键，保存 BOSS 或猎聘最近一次发送
+事件，典型字段包括：
 
 ```json
 {
@@ -764,7 +769,8 @@ jobChatPreparedSourceList
 }
 ```
 
-`type` 还可能表示发送开始、完成、停止或整体错误。
+`type` 还可能表示发送开始、完成、停止或整体错误；猎聘事件使用
+`LIEPIN_SEND_*`，并带有 `siteKey: "liepin"`。
 
 ### 17.2 取消标志
 
@@ -777,15 +783,11 @@ jobChatPreparedSourceList
 
 ### 17.3 日志
 
-岗位及同步请求/响应日志、岗位更新摘要和标签页刷新日志通过运行时消息发送到当前结果页，
-仅保存在 `results.js` 的内存数组中。当前页面最多保留最近 1000 条请求日志和 200 条摘要；
-开始新任务时清空，结果页关闭或刷新后丢失，不写入 `chrome.storage.local`。
-
-仅 BOSS 批量发送日志仍使用本地存储：
-
-| 存储键 | 类型 | 上限 | 说明 |
-|---|---|---:|---|
-| `jobChatBossSendLogs` | array | 200 | BOSS 批量发送日志 |
+岗位及同步请求/响应日志、岗位更新摘要、标签页刷新日志和批量发送日志，都通过运行时
+消息发送到当前结果页，仅保存在 `results.js` 的内存数组中。当前页面最多保留最近
+1000 条请求日志和 200 条摘要或发送日志；开始新任务时清空，结果页关闭或刷新后
+丢失，不写入 `chrome.storage.local`。旧版本遗留的 `jobChatBossSendLogs` 会在后台
+启动时删除。
 
 日志仅在页面日志区域按配置显示，不进入 JSON 或 CSV。岗位请求日志可能包含完整 URL、
 访问凭据、token、请求头和响应，应视为敏感数据。
@@ -800,7 +802,9 @@ jobChatPreparedSourceList
 | `jobChatJobDetailRetryDelay` | `60` | `code=37` 重试延时，单位秒 |
 | `jobChatJobDetailRetryCount` | `3` | `code=37` 最大重试次数 |
 | `jobChatBossSendRate` | `10` | BOSS 批量发送每分钟速率 |
+| `jobChatSendRates` | `{"boss":10,"liepin":10}` | 按站点保存的批量发送速率 |
 | `jobChatBossPcDeviceId` | string | BOSS 发送协议使用的本地设备 ID |
+| `jobChatLiepinImClientIds` | object | 按 `imId` 隔离的猎聘客户端 ID 缓存 |
 
 设置和设备 ID 不随记录导出。
 
@@ -853,7 +857,7 @@ jobChatPreparedSourceList
 1. 普通 CSV 适合导出可见聊天记录；调试 CSV 可备份站点内部发送、增量同步和岗位字段。
 2. 普通 CSV 恢复后需要重新拉取岗位信息。
 3. 调试 JSON 可完整导出单条记录，但当前项目没有 JSON 导入功能。
-4. 公司资料、忽略列表、BOSS 批量发送日志、设置和同步状态只有完整本地存储备份才能恢复。
+4. 公司资料、忽略列表、设置和同步状态只有完整本地存储备份才能恢复。
    一次性同步日志不进入备份。
 
 ## 20. 敏感数据
@@ -868,6 +872,8 @@ jobChatPreparedSourceList
 - `boss.encryptBossId`
 - `liepin.imId`
 - `liepin.oppositeImId`
+- `liepin.oppositeUserId`
+- `jobChatLiepinImClientIds`
 - `jobChatPreparedSourceList.list`
 - `jobChatBossFriendListCapture`
 - 结果页内存中的一次性请求日志

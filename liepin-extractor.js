@@ -11,6 +11,7 @@
     appendRequestLog
   } = globalThis.JobChatContentCommon;
   const { normalizeJobInfo, isCompleteJobInfo, normalizeMultilineText } = globalThis.JobChatRecords;
+  let liepinSendBatch = null;
 
   async function readExistingLiepinPending() {
     try {
@@ -363,6 +364,7 @@
         ...(existingRecord?.liepin || {}),
         imId: item.imId || imId,
         oppositeImId: item.oppositeImId || existingRecord?.liepin?.oppositeImId || '',
+        oppositeUserId: item.oppositeUserId || existingRecord?.liepin?.oppositeUserId || '',
         latestMsgId: item.latestMsgId || '',
         latestMsgTime: item.latestMsgTime || '',
         oppositeRead: normalizeText(item.oppositeRead || ''),
@@ -784,7 +786,12 @@
         addLiepinRecordKeys(recordKeys, record);
         return recordKeys.has(itemKey);
       }));
-      const baseRecord = await buildLiepinRecord(item, imId, existingIndex >= 0 ? existingIndex + 1 : records.length + 1, existingRecord);
+      const baseRecord = await buildLiepinRecord(
+        item,
+        imId,
+        existingIndex >= 0 ? existingIndex + 1 : records.length + 1,
+        existingRecord
+      );
       const emptyPreview = isLiepinEmptyJobPreview(baseRecord);
       const needsJobDetail = liepinNeedsJobDetail(baseRecord);
       const jobResult = emptyPreview
@@ -864,7 +871,10 @@
       const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
       return Boolean(existingRecord) && liepinItemSyncNeeds(item, savedByKey, pendingByKey).message;
     }).length;
-    const jobDetailSyncCount = contactsToSync.filter((item) => liepinItemSyncNeeds(item, savedByKey, pendingByKey).jobDetail).length;
+    const jobDetailSyncCount = contactsToSync.filter((item) => {
+      const existingRecord = findLiepinRecordForItem(pendingByKey, item) || findLiepinRecordForItem(savedByKey, item);
+      return Boolean(existingRecord) && liepinItemSyncNeeds(item, savedByKey, pendingByKey).jobDetail;
+    }).length;
     return {
       list: contactsToSync,
       needSync: contactsToSync.length,
@@ -883,10 +893,11 @@
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘。');
     let contactsByKey = null;
     const findContact = async (record) => {
-      if (record?.liepin?.homePage && record?.liepin?.oppositeImId) {
+      if (record?.liepin?.homePage && record?.liepin?.oppositeImId && record?.liepin?.oppositeUserId) {
         return {
           imId: record.liepin.imId || imId,
           oppositeImId: record.liepin.oppositeImId,
+          oppositeUserId: record.liepin.oppositeUserId,
           homePage: record.liepin.homePage,
           latestMsgId: record.liepin.latestMsgId,
           latestMsgTime: record.liepin.latestMsgTime,
@@ -975,10 +986,261 @@
     return { records: updated, results, stopped, paused: false, jobDetail: jobDetailStats };
   }
 
+  function emitLiepinSendProgress(payload) {
+    chrome.runtime.sendMessage({
+      type: 'LIEPIN_SEND_PROGRESS',
+      progress: payload
+    }).catch(() => {});
+  }
+
+  function emitLiepinSendLog(message) {
+    chrome.runtime.sendMessage({
+      type: 'LIEPIN_SEND_LOG',
+      message: String(message || '')
+    }).catch(() => {});
+  }
+
+  async function postLiepinSendForm(url, params, operation) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        mode: 'cors',
+        headers: liepinHeaders(),
+        body: new URLSearchParams(params).toString()
+      });
+    } catch (error) {
+      throw new Error(`${operation}网络请求失败：${error?.message || String(error)}`);
+    }
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (_) {
+      throw new Error(`${operation}未返回有效 JSON（HTTP ${response.status}）。`);
+    }
+    if (!response.ok) throw new Error(`${operation}请求失败：HTTP ${response.status}。`);
+    if (data?.flag !== 1) {
+      throw new Error(`${operation}返回异常：${normalizeText(data?.msg || data?.message) || `flag=${String(data?.flag)}`}。`);
+    }
+    return data.data || {};
+  }
+
+  async function getLiepinImClientId(imId) {
+    const store = await chrome.storage.local.get(['jobChatLiepinImClientIds']);
+    const cached = store.jobChatLiepinImClientIds && typeof store.jobChatLiepinImClientIds === 'object'
+      ? { ...store.jobChatLiepinImClientIds }
+      : {};
+    const saved = normalizeText(cached[imId]);
+    if (saved) {
+      emitLiepinSendLog('已使用当前猎聘账号缓存的 imClientId。');
+      return saved;
+    }
+    emitLiepinSendLog('正在获取当前猎聘账号的 imClientId。');
+    const data = await postLiepinSendForm(
+      'https://api-im.liepin.com/api/com.liepin.cbp.im.get-user-info',
+      {
+        imUserType: '0',
+        imId,
+        imApp: '1',
+        deviceType: '0'
+      },
+      '获取猎聘用户信息'
+    );
+    const responseImId = normalizeText(data.imId);
+    const imClientId = normalizeText(data.imClientId);
+    if (!imClientId) throw new Error('猎聘用户信息缺少 imClientId。');
+    if (responseImId && responseImId !== imId) throw new Error('猎聘页面当前账号与用户信息接口返回账号不一致。');
+    cached[imId] = imClientId;
+    await chrome.storage.local.set({ jobChatLiepinImClientIds: cached });
+    emitLiepinSendLog('已保存当前猎聘账号的 imClientId。');
+    return imClientId;
+  }
+
+  async function resolveLiepinOppositeUser(target, imId) {
+    const liepin = target?.liepin || {};
+    const saved = normalizeText(liepin.oppositeUserId);
+    if (saved) {
+      return {
+        oppositeUserId: saved,
+        oppositeImUserType: normalizeText(liepin.oppositeImUserType) || '2'
+      };
+    }
+    const oppositeImId = normalizeText(liepin.oppositeImId);
+    emitLiepinSendLog('当前记录缺少 oppositeUserId，正在从聊天列表补全。');
+    const data = await postLiepinSendForm(
+      'https://api-c.liepin.com/api/com.liepin.im.c.chat.chat-list',
+      {
+        imUserType: '0',
+        imId,
+        imApp: '1',
+        oppositeImId,
+        maxMessageId: '',
+        pageSize: '20'
+      },
+      '获取猎聘聊天列表'
+    );
+    const first = Array.isArray(data.list) ? data.list[0] : null;
+    if (!first) throw new Error('猎聘聊天列表为空，无法补全 oppositeUserId。');
+    if (normalizeText(first.oppositeImId) !== oppositeImId) {
+      throw new Error('猎聘聊天列表返回的联系人与当前记录不一致。');
+    }
+    const oppositeUserId = normalizeText(first.oppositeUserId);
+    if (!oppositeUserId) throw new Error('猎聘聊天列表缺少 oppositeUserId。');
+    emitLiepinSendProgress({
+      type: 'LIEPIN_SEND_PROGRESS',
+      recordKey: target.recordKey,
+      status: '等待',
+      oppositeUserId
+    });
+    emitLiepinSendLog('已补全并保存当前联系人的 oppositeUserId。');
+    return {
+      oppositeUserId,
+      oppositeImUserType: normalizeText(first.oppositeImUserType) || '2'
+    };
+  }
+
+  function liepinTextPayload(message) {
+    return JSON.stringify({
+      ext: {
+        extType: 1,
+        extBody: {
+          bizType: '1',
+          bizData: { quote: {} },
+          bsData: {}
+        }
+      },
+      bodies: [{ msg: message, type: 'txt' }],
+      push: '1'
+    });
+  }
+
+  async function sendLiepinText(target, context, message) {
+    const liepin = target?.liepin || {};
+    const oppositeImId = normalizeText(liepin.oppositeImId);
+    if (!oppositeImId) throw new Error('记录缺少 oppositeImId，需要重新同步记录后再发送。');
+    const recordImId = normalizeText(liepin.imId);
+    if (recordImId && recordImId !== context.imId) {
+      throw new Error('联系人属于其他猎聘账号，请切换账号或重新同步记录后再发送。');
+    }
+    const opposite = await resolveLiepinOppositeUser(target, context.imId);
+    const requestMsgTime = Date.now();
+    const data = await postLiepinSendForm(
+      'https://api-c.liepin.com/api/com.liepin.im.c.chat.send-push',
+      {
+        imUserType: '0',
+        imId: context.imId,
+        imApp: '1',
+        save: '',
+        count: '1',
+        imClientId: context.imClientId,
+        oppositeImId,
+        oppositeUserId: opposite.oppositeUserId,
+        oppositeImUserType: opposite.oppositeImUserType,
+        chatType: '0',
+        msgTime: String(requestMsgTime),
+        msgType: 'txt',
+        payload: liepinTextPayload(message)
+      },
+      '发送猎聘消息'
+    );
+    const msgId = normalizeText(data.msgId);
+    if (!msgId) throw new Error('猎聘发送接口未返回 msgId，发送结果未知且不会重试。');
+    return {
+      msgId,
+      msgTime: Number(data.msgTime || requestMsgTime),
+      oppositeUserId: opposite.oppositeUserId
+    };
+  }
+
+  async function waitForLiepinSend(batch, delayMs) {
+    const deadline = Date.now() + Math.max(0, delayMs);
+    while (!batch.cancelled && Date.now() < deadline) {
+      await sleep(Math.min(250, deadline - Date.now()));
+    }
+  }
+
+  async function runLiepinSendBatch(targets, message, rate, batch) {
+    try {
+      const imId = getLiepinImId();
+      if (!imId) throw new Error('没有找到当前猎聘账号的 imId_0，请确认已登录并刷新猎聘页面。');
+      const imClientId = await getLiepinImClientId(imId);
+      const context = { imId, imClientId };
+      const requestedRate = Number(rate);
+      const normalizedRate = Number.isFinite(requestedRate) ? Math.max(1, Math.floor(requestedRate)) : 10;
+      const intervalMs = Math.ceil(60000 / normalizedRate);
+      let lastStartedAt = 0;
+      emitLiepinSendProgress({ type: 'LIEPIN_SEND_STARTED', total: targets.length });
+      emitLiepinSendLog(`开始发送，共 ${targets.length} 条，速率为每分钟 ${normalizedRate} 条。`);
+      for (let index = 0; index < targets.length; index += 1) {
+        if (batch.cancelled) break;
+        const target = targets[index];
+        emitLiepinSendProgress({ type: 'LIEPIN_SEND_PROGRESS', recordKey: target.recordKey, status: '等待' });
+        await waitForLiepinSend(batch, Math.max(0, lastStartedAt + intervalMs - Date.now()));
+        if (batch.cancelled) break;
+        lastStartedAt = Date.now();
+        emitLiepinSendLog(`正在发送第 ${index + 1} / ${targets.length} 条消息。`);
+        try {
+          const result = await sendLiepinText(target, context, message);
+          emitLiepinSendProgress({
+            type: 'LIEPIN_SEND_PROGRESS',
+            recordKey: target.recordKey,
+            status: '成功',
+            sentMessage: message,
+            msgId: result.msgId,
+            msgTime: result.msgTime,
+            oppositeUserId: result.oppositeUserId
+          });
+          emitLiepinSendLog(`第 ${index + 1} / ${targets.length} 条消息发送成功。`);
+        } catch (error) {
+          const errorMessage = error?.message || String(error);
+          emitLiepinSendProgress({
+            type: 'LIEPIN_SEND_PROGRESS',
+            recordKey: target.recordKey,
+            status: '失败',
+            errorCode: 'LIEPIN_SEND_FAILED',
+            errorMessage
+          });
+          emitLiepinSendLog(`第 ${index + 1} / ${targets.length} 条消息发送失败：${errorMessage}`);
+        }
+      }
+      emitLiepinSendProgress({
+        type: batch.cancelled ? 'LIEPIN_SEND_STOPPED' : 'LIEPIN_SEND_FINISHED'
+      });
+      emitLiepinSendLog(batch.cancelled ? '发送已停止。' : '发送批次已完成。');
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+      emitLiepinSendLog(`发送任务失败：${errorMessage}`);
+      emitLiepinSendProgress({ type: 'LIEPIN_SEND_ERROR', errorMessage });
+    } finally {
+      if (liepinSendBatch === batch) liepinSendBatch = null;
+    }
+  }
+
+  function startLiepinSendBatch(targets, message, rate) {
+    if (liepinSendBatch) throw new Error('已有猎聘发送批次正在运行。');
+    const normalizedTargets = Array.isArray(targets) ? targets : [];
+    const text = normalizeText(message);
+    if (!normalizedTargets.length) throw new Error('没有可发送的猎聘记录。');
+    if (!text) throw new Error('请输入要发送的消息。');
+    if (text.length > 1000) throw new Error('猎聘消息不能超过 1000 个字符。');
+    const batch = { cancelled: false };
+    liepinSendBatch = batch;
+    runLiepinSendBatch(normalizedTargets, text, rate, batch);
+    return { total: normalizedTargets.length };
+  }
+
+  function stopLiepinSendBatch() {
+    if (liepinSendBatch) liepinSendBatch.cancelled = true;
+  }
+
   globalThis.JobChatLiepinExtractor = {
     extract: extractLiepinChatRecords,
     prepare: prepareLiepinSync,
-    refreshRecords: refreshLiepinRecords
+    refreshRecords: refreshLiepinRecords,
+    startSendBatch: startLiepinSendBatch,
+    stopSendBatch: stopLiepinSendBatch
   };
   globalThis.JobChatSiteAdapters?.register('liepin', {
     siteKey: 'liepin',

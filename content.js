@@ -167,6 +167,28 @@
       sendResponse({ ok: true });
       return;
     }
+    if (message?.type === 'LIEPIN_SEND_BATCH') {
+      if (!location.hostname.endsWith('liepin.com')) {
+        sendResponse({ ok: false, error: '当前标签页不是猎聘页面。' });
+        return;
+      }
+      try {
+        const data = globalThis.JobChatLiepinExtractor.startSendBatch(
+          message.targets,
+          message.message,
+          message.rate
+        );
+        sendResponse({ ok: true, ...data });
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (message?.type === 'LIEPIN_STOP_BATCH') {
+      globalThis.JobChatLiepinExtractor?.stopSendBatch();
+      sendResponse({ ok: true });
+      return;
+    }
     if (message?.type === 'JOB_CHAT_REFRESH_RECORDS') {
       const detected = detectSiteByLocation();
       const adapter = globalThis.JobChatSiteAdapters?.get(detected);
