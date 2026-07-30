@@ -1,6 +1,9 @@
 {
   "scripts": {
-    "package": "node scripts/package-extension.js"
+    "package": "node scripts/package-with-ga4.js",
+    "package:skip-ga4": "node scripts/package-extension.js --skip-ga4"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
 }

@@ -76,15 +76,74 @@
 4. 点击“加载已解压的扩展程序”
 5. 选择本项目根目录
 
+### 开发版 GA4 配置
+
+本地开发版会在 `enableDebugLog=true` 时自动读取根目录下的
+`runtime-config.local.js`。打开该文件并填写：
+
+```js
+(function () {
+  Object.assign(globalThis.JobChatRuntimeConfig, {
+    analyticsEnabled: true,
+    ga4MeasurementId: 'G-XXXXXXXXXX',
+    ga4ApiSecret: '你的 Measurement Protocol API Secret'
+  });
+})();
+```
+
+保存后回到 `chrome://extensions/`，点击扩展卡片上的“重新加载”。该文件已经加入
+`.gitignore`，不会被 Git 提交，也不在正式打包文件清单中。可提交的字段示例保存在
+`runtime-config.local.example.js`，不要把真实 Secret 写入示例文件。
+
+开发版发送到 GA4 的 `extension_version` 会在 manifest 版本后自动追加 `-dev`，
+例如当前开发版为 `5.1.0-dev`；正式打包时会自动关闭开发模式，并上报 `5.1.0`。
+`manifest.version` 始终保持 Chrome 要求的纯数字格式，不直接写入 `-dev`。
+
 ## Chrome 商店打包
 
-运行以下命令生成可上传到 Chrome Web Store 的 zip 包：
+打包环境需要 Node.js 18 或更高版本。首次打包先安装锁定的开发依赖：
+
+```bash
+npm ci
+```
+
+打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
+
+打包阶段使用锁定版本的 `esbuild` 压缩全部 JavaScript：删除注释和多余空白，并进行安全的语法压缩；不生成 source map，也不执行字符串加密、控制流改写等代码混淆。由于扩展的多个脚本通过全局函数协作，压缩过程会保留标识符名称，避免跨文件调用失效。源文件不会被修改，压缩只发生在临时打包目录中。
+
+命令完成后会输出 JavaScript 压缩前后的字节数。正式包还会把 `runtime-config.js` 中的 Debug 日志默认值关闭；可以使用以下命令检查压缩包完整性：
+
+```bash
+unzip -t dist/job-chat-recorder-v{manifest版本号}.zip
+```
+
+匿名统计使用 GA4 Measurement Protocol 直连。执行以下命令后，脚本会询问
+Measurement ID，并隐藏输入 API Secret：
 
 ```bash
 npm run package
 ```
 
-打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
+脚本不会把输入写入源码、命令参数或构建日志。CI 等非交互环境可以提前设置：
+
+```text
+JOB_CHAT_GA4_MEASUREMENT_ID=G-XXXXXXXXXX
+JOB_CHAT_GA4_API_SECRET=你的 Measurement Protocol API Secret
+```
+
+需要明确生成不包含 GA4 配置的包时，使用强制跳过参数：
+
+```bash
+npm run package -- --skip-ga4
+# 或
+npm run package:skip-ga4
+```
+
+`--skip-ga4` 会忽略当前环境中已有的 GA4 变量，并输出统计关闭的包。没有该参数时，
+非交互环境中任一变量缺失都会导致打包失败。打包脚本不会输出密钥，也不会修改源码中的空配置。
+由于 Chrome 扩展可以被下载和反编译，注入后的 API Secret 最终仍能从发布包中提取；
+应为扩展使用独立 GA4 数据流，并定期轮换 Secret。完整事件、维度和 GA4 配置参见
+[`docs/ga4-analytics-plan.md`](docs/ga4-analytics-plan.md)。
 
 ## 使用方式
 
@@ -110,17 +169,21 @@ npm run package
 ├── popup.html
 ├── popup.js
 ├── content.js
+├── analytics.js
+├── runtime-config.local.example.js
 ├── background-database.js
 ├── results-database.js
 ├── results.html
 ├── results.js
 ├── scripts/
-│   └── package-extension.js
+│   ├── package-extension.js
+│   └── package-with-ga4.js
 ├── docs/
 │   ├── zhipin.md
 │   ├── zhipin_send_msg.md
 │   ├── liepin.md
-│   └── liepin_send_msg.md
+│   ├── liepin_send_msg.md
+│   └── ga4-analytics-plan.md
 ├── assets/
 │   └── icons/
 │       ├── icon-16.png
@@ -146,4 +209,10 @@ git push -u origin main
 
 ## 隐私说明
 
-本扩展只读取当前登录态可访问的招聘沟通数据。同步结果、联系人发送标识和发送进度保存在本地浏览器扩展存储中；岗位同步和批量发送日志只在当前结果页内存中临时展示。这些数据不会上传到扩展作者或其他第三方服务器。只有用户主动点击“发送”时，扩展才会通过当前招聘网站页面的登录态向所选已有联系人发送消息；Cookie、HTTP token 和 `wt2` 不写入扩展存储。
+本扩展只读取当前登录态可访问的招聘沟通数据。同步结果、联系人发送标识和发送进度保存在本地浏览器扩展存储中；岗位同步和批量发送日志只在当前结果页内存中临时展示。聊天内容、账号 ID、公司和岗位信息、Cookie、HTTP token、`wt2`、搜索关键词、完整 URL 及原始错误信息不会发送到统计服务。
+
+配置 GA4 后，扩展会直接向 Google Analytics 发送匿名安装、每日活跃、同步结果、保存记录数量和 CSV 下载数量，以及插件版本、招聘平台、页面类型、地区近似值、操作系统、系统架构和 Chrome 版本。匿名安装 ID 不来自招聘网站账号，也不用于识别自然人。用户可以在扩展弹窗中关闭“允许匿名使用统计”，关闭后不再发送新事件。
+
+扩展卸载后无法继续执行代码，因此本实现不向 GA4 发送自定义卸载事件，卸载量继续以 Chrome Web Store 后台统计为准。
+
+只有用户主动点击“发送”时，扩展才会通过当前招聘网站页面的登录态向所选已有联系人发送消息。

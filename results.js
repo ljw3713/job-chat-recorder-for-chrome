@@ -116,6 +116,35 @@ function isResolvedJobInfo(record) {
 }
 const ResultsDb = globalThis.JobChatResultsDb;
 
+function trackAnalyticsEvent(eventName, params = {}) {
+  return chrome.runtime.sendMessage({
+    type: 'JOB_CHAT_ANALYTICS_EVENT',
+    eventName,
+    params
+  }).catch(() => ({ ok: false, sent: false }));
+}
+
+function analyticsSiteForRecords(records) {
+  const sites = new Set((records || []).map(recordSiteKey).filter(Boolean));
+  if (sites.size > 1) return 'mixed';
+  return sites.size === 1 ? [...sites][0] : 'none';
+}
+
+function trackSavedRecords(records, result) {
+  const groups = new Map();
+  (records || []).forEach((record) => {
+    const site = recordSiteKey(record) || 'none';
+    groups.set(site, (groups.get(site) || 0) + 1);
+  });
+  if (!groups.size) groups.set('none', 0);
+  return Promise.all([...groups.entries()].map(([site, count]) => trackAnalyticsEvent('records_saved', {
+    site,
+    record_count: count,
+    page_mode: mode,
+    result
+  })));
+}
+
 let latestData = null;
 let extractionStatus = null;
 let allRecords = [];
@@ -1588,15 +1617,23 @@ if (queryInput) queryInput.addEventListener('input', () => {
 });
 
 saveBtn.addEventListener('click', async () => {
-  await persistCurrentRecords();
-  const response = await chrome.runtime.sendMessage({ type: 'SAVE_PENDING_TO_TOTAL' });
-  if (!response?.ok) {
-    alert(response?.error || '保存失败');
-    return;
+  const recordsForAnalytics = [...allRecords];
+  try {
+    await persistCurrentRecords();
+    const response = await chrome.runtime.sendMessage({ type: 'SAVE_PENDING_TO_TOTAL' });
+    if (!response?.ok) {
+      void trackSavedRecords(recordsForAnalytics, 'failed');
+      alert(response?.error || '保存失败');
+      return;
+    }
+    void trackSavedRecords(recordsForAnalytics, recordsForAnalytics.length ? 'success' : 'empty');
+    saveBtn.textContent = '已保存到总记录';
+    setTimeout(() => (saveBtn.textContent = '保存到总记录'), 1500);
+    await loadAndRenderLatest();
+  } catch (error) {
+    void trackSavedRecords(recordsForAnalytics, 'failed');
+    alert(error?.message || '保存失败');
   }
-  saveBtn.textContent = '已保存到总记录';
-  setTimeout(() => (saveBtn.textContent = '保存到总记录'), 1500);
-  await loadAndRenderLatest();
 });
 
 overviewBtn.addEventListener('click', async () => {
@@ -1860,6 +1897,8 @@ copyJsonBtn.addEventListener('click', async () => {
 });
 
 downloadCsvBtn.addEventListener('click', () => {
+  const exportRecords = csvExportRecords();
+  const recordScope = selectedRecords().length ? 'selected' : 'all';
   const blob = new Blob(['\ufeff' + toCsv()], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1867,7 +1906,18 @@ downloadCsvBtn.addEventListener('click', () => {
   a.download = `job-chat-records-${mode}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+  void trackAnalyticsEvent('csv_downloaded', {
+    site: analyticsSiteForRecords(exportRecords),
+    record_count: exportRecords.length,
+    record_scope: recordScope,
+    page_mode: mode,
+    result: exportRecords.length ? 'success' : 'empty'
+  });
 });
 
+chrome.runtime.sendMessage({
+  type: 'JOB_CHAT_ANALYTICS_ACTIVE',
+  pageMode: mode
+}).catch(() => {});
 configurePageMode();
 loadAndRenderLatest();

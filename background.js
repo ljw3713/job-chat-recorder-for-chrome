@@ -47,7 +47,15 @@ function supportedSiteNames() {
 }
 
 globalThis.JobChatSupportedSites = SUPPORTED_SITES;
-importScripts('runtime-config.js', 'shared-utils.js', 'shared-records.js', 'background-database.js');
+importScripts('runtime-config.js');
+if (globalThis.JobChatRuntimeConfig?.enableDebugLog) {
+  try {
+    importScripts('runtime-config.local.js');
+  } catch (_) {
+    // 本地 GA4 配置为可选文件，不存在时保持统计关闭。
+  }
+}
+importScripts('analytics.js', 'shared-utils.js', 'shared-records.js', 'background-database.js');
 
 const CONTENT_SCRIPT_FILES = [
   'shared-utils.js',
@@ -70,6 +78,50 @@ let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
 
 chrome.storage.local.remove(['jobChatRequestLogs', 'jobChatRefreshLogs', 'jobChatBossSendLogs']).catch(() => {});
+chrome.runtime.onInstalled.addListener((details) => {
+  globalThis.JobChatAnalytics.handleInstalled(details).catch(() => {});
+});
+globalThis.JobChatAnalytics.clearUninstallUrl().catch(() => {});
+
+function analyticsErrorCode(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  if (!message) return 'unknown';
+  if (message.includes('不支持当前网站') || message.includes('暂不支持')) return 'unsupported_site';
+  if (message.includes('cancel') || message.includes('中断') || message.includes('取消')) return 'cancelled';
+  if (message.includes('code=37') || message.includes('安全验证') || message.includes('风控')) return 'risk_control';
+  if (message.includes('storage') || message.includes('quota') || message.includes('保存')) return 'storage_failed';
+  if (message.includes('network') || message.includes('fetch') || message.includes('网络')) return 'network_failed';
+  if (message.includes('页面') || message.includes('tab') || message.includes('标签页')) return 'page_unavailable';
+  return 'sync_failed';
+}
+
+async function extractFromTabWithAnalytics(tab, syncSelection) {
+  const site = detectSupportedSite(tab?.url || '');
+  try {
+    const data = await extractFromTab(tab, syncSelection);
+    const summary = data?.syncSummary || {};
+    const stoppedByRiskControl = Boolean(summary.jobDetail?.stoppedByRiskControl);
+    const interrupted = Boolean(summary.interrupted);
+    await globalThis.JobChatAnalytics.sendEvent('sync_completed', {
+      site: site?.key || 'none',
+      record_count: Number(summary.synced || data?.records?.length || 0),
+      inserted_count: Number(summary.inserted || 0),
+      updated_count: Number(summary.updatedMsg ?? summary.updated ?? 0),
+      page_mode: 'background',
+      result: stoppedByRiskControl || interrupted ? 'cancelled' : 'success',
+      error_code: stoppedByRiskControl ? 'risk_control' : (interrupted ? 'cancelled' : 'none')
+    });
+    return data;
+  } catch (error) {
+    await globalThis.JobChatAnalytics.sendEvent('sync_failed', {
+      site: site?.key || 'none',
+      page_mode: 'background',
+      result: analyticsErrorCode(error) === 'cancelled' ? 'cancelled' : 'failed',
+      error_code: analyticsErrorCode(error)
+    });
+    throw error;
+  }
+}
 
 function unsupportedMessage(tabUrl) {
   const hostname = getHostname(tabUrl) || tabUrl || '当前页面';
@@ -1192,6 +1244,34 @@ async function saveRefreshProgressRecord(progress) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
+  if (message?.type === 'JOB_CHAT_ANALYTICS_STATUS') {
+    globalThis.JobChatAnalytics.status()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_ANALYTICS_SET_ENABLED') {
+    globalThis.JobChatAnalytics.setEnabled(Boolean(message.enabled))
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_ANALYTICS_ACTIVE') {
+    globalThis.JobChatAnalytics.trackDailyActive(message.pageMode)
+      .then((sent) => sendResponse({ ok: true, sent }))
+      .catch(() => sendResponse({ ok: false, sent: false }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_ANALYTICS_EVENT') {
+    globalThis.JobChatAnalytics.sendEvent(message.eventName, message.params)
+      .then((sent) => sendResponse({ ok: true, sent }))
+      .catch(() => sendResponse({ ok: false, sent: false }));
+    return true;
+  }
+
   if (message?.type === 'JOB_CHAT_COMPANY_PROFILE_UPSERT') {
     const profile = message.profile || {};
     companyProfileSaveQueue = companyProfileSaveQueue.catch(() => {}).then(async () => {
@@ -1323,7 +1403,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = store.jobChatLastSourceTab;
       if (!tab?.id || !tab?.url) throw new Error('没有找到上次同步的页面，请回到对应招聘网站页面重新点击插件同步。');
       await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
-      await extractFromTab(tab, message.syncSelection);
+      await extractFromTabWithAnalytics(tab, message.syncSelection);
       return { ok: true };
     })()
       .then((data) => sendResponse(data || { ok: true }))
@@ -1345,7 +1425,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = store.jobChatLastSourceTab;
       if (!tab?.id || !tab?.url) throw new Error('没有找到上次同步的页面，请回到对应招聘网站页面重新点击插件同步。');
       await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
-      await extractFromTab(tab, message.syncSelection);
+      await extractFromTabWithAnalytics(tab, message.syncSelection);
       return { ok: true };
     })()
       .then((data) => sendResponse(data || { ok: true }))
@@ -1501,6 +1581,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       await prepareSyncFromTab(sourceTab);
     } catch (error) {
+      await globalThis.JobChatAnalytics.sendEvent('sync_failed', {
+        site: site?.key || 'none',
+        page_mode: 'background',
+        result: analyticsErrorCode(error) === 'cancelled' ? 'cancelled' : 'failed',
+        error_code: analyticsErrorCode(error)
+      });
       await chrome.storage.local.set({
         jobChatExtractionStatus: {
           state: 'error',

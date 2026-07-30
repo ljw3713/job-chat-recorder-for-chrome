@@ -1,11 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { transformSync } = require('esbuild');
 
 const rootDir = path.resolve(__dirname, '..');
 const manifestPath = path.join(rootDir, 'manifest.json');
 const distDir = path.join(rootDir, 'dist');
 const stageDir = path.join(distDir, '.extension-package');
+const skipGa4 = process.argv.includes('--skip-ga4');
 
 const packageFiles = [
   'manifest.json',
@@ -16,6 +18,7 @@ const packageFiles = [
   'results-database.js',
   'background.js',
   'background-database.js',
+  'analytics.js',
   'runtime-config.js',
   'shared-utils.js',
   'shared-records.js',
@@ -54,9 +57,62 @@ function copyPackageFiles() {
 
   const runtimeConfigPath = path.join(stageDir, 'runtime-config.js');
   const developmentConfig = fs.readFileSync(runtimeConfigPath, 'utf8');
-  const releaseConfig = developmentConfig.replace('enableDebugLog: true', 'enableDebugLog: false');
+  let releaseConfig = developmentConfig.replace('enableDebugLog: true', 'enableDebugLog: false');
   if (releaseConfig === developmentConfig) throw new Error('Unable to create release runtime config.');
+  if (skipGa4) {
+    const disabledConfig = releaseConfig.replace('analyticsEnabled: true', 'analyticsEnabled: false');
+    if (disabledConfig === releaseConfig) throw new Error('Unable to disable GA4 for skipped build.');
+    releaseConfig = disabledConfig;
+  }
+  const measurementId = skipGa4 ? '' : String(process.env.JOB_CHAT_GA4_MEASUREMENT_ID || '').trim();
+  const apiSecret = skipGa4 ? '' : String(process.env.JOB_CHAT_GA4_API_SECRET || '').trim();
+  if (!skipGa4 && (!measurementId || !apiSecret)) {
+    throw new Error(
+      'JOB_CHAT_GA4_MEASUREMENT_ID and JOB_CHAT_GA4_API_SECRET are required. '
+      + 'Use "npm run package -- --skip-ga4" to explicitly build without analytics.'
+    );
+  }
+  if (measurementId && !/^G-[A-Z0-9]+$/i.test(measurementId)) {
+    throw new Error('JOB_CHAT_GA4_MEASUREMENT_ID must use the G-XXXXXXXX format.');
+  }
+  if (measurementId) {
+    const measurementPlaceholder = "ga4MeasurementId: ''";
+    const secretPlaceholder = "ga4ApiSecret: ''";
+    if (!releaseConfig.includes(measurementPlaceholder) || !releaseConfig.includes(secretPlaceholder)) {
+      throw new Error('Unable to inject GA4 release config.');
+    }
+    releaseConfig = releaseConfig
+      .replace(measurementPlaceholder, `ga4MeasurementId: ${JSON.stringify(measurementId)}`)
+      .replace(secretPlaceholder, `ga4ApiSecret: ${JSON.stringify(apiSecret)}`);
+  }
   fs.writeFileSync(runtimeConfigPath, releaseConfig);
+  return { analyticsEnabled: Boolean(measurementId) };
+}
+
+function minifyJavaScriptFiles() {
+  let originalBytes = 0;
+  let minifiedBytes = 0;
+
+  for (const relativePath of packageFiles.filter((file) => file.endsWith('.js'))) {
+    const filePath = path.join(stageDir, relativePath);
+    const source = fs.readFileSync(filePath, 'utf8');
+    const result = transformSync(source, {
+      loader: 'js',
+      target: 'es2020',
+      minifySyntax: true,
+      minifyWhitespace: true,
+      minifyIdentifiers: false,
+      legalComments: 'none',
+      sourcemap: false,
+      charset: 'utf8'
+    });
+    const minified = `${result.code.trim()}\n`;
+    originalBytes += Buffer.byteLength(source);
+    minifiedBytes += Buffer.byteLength(minified);
+    fs.writeFileSync(filePath, minified);
+  }
+
+  return { originalBytes, minifiedBytes };
 }
 
 function createZip(outputName) {
@@ -80,13 +136,16 @@ function main() {
   const outputName = `job-chat-recorder-v${manifest.version}.zip`;
 
   fs.mkdirSync(distDir, { recursive: true });
-  copyPackageFiles();
+  const releaseConfig = copyPackageFiles();
+  const minifyStats = minifyJavaScriptFiles();
 
   const outputPath = createZip(outputName);
   fs.rmSync(stageDir, { recursive: true, force: true });
 
   console.log(`Created ${path.relative(rootDir, outputPath)}`);
   console.log(`Included ${packageFiles.length} files.`);
+  console.log(`Minified JavaScript: ${minifyStats.originalBytes} -> ${minifyStats.minifiedBytes} bytes.`);
+  console.log(`GA4 analytics: ${releaseConfig.analyticsEnabled ? 'enabled' : 'disabled (--skip-ga4)'}.`);
 }
 
 main();
