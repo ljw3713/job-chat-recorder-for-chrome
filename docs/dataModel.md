@@ -261,6 +261,56 @@ liepin|{liepin.oppositeImId}
 
 该记录视为岗位信息已同步，不会被“岗位信息未同步”筛选命中。
 
+## 6.1 完整会话 `conversation`
+
+`conversation` 是 BOSS 和猎聘共用的顶层结构，保存在对应的沟通记录中：
+
+```json
+{
+  "version": 1,
+  "currentUserId": "728098945",
+  "messages": [
+    {
+      "id": "369372371206155",
+      "text": "消息正文",
+      "fromUserId": "59870550",
+      "toUserId": "728098945",
+      "timestamp": 1785318001552
+    }
+  ],
+  "sync": {
+    "complete": true,
+    "sourceLatestMessageId": "369679994945542",
+    "syncedAt": "2026-07-30T07:03:58.000Z"
+  }
+}
+```
+
+| 字段 | 作用 |
+|---|---|
+| `version` | 通用会话结构版本 |
+| `currentUserId` | 当前登录用户 ID，用于判断消息左右方向 |
+| `messages` | 按时间升序保存的文本消息 |
+| `messages[].id` | 来源平台消息 ID |
+| `messages[].text` | 文本正文，保留换行 |
+| `messages[].fromUserId` | 发送者用户 ID |
+| `messages[].toUserId` | 接收者用户 ID |
+| `messages[].timestamp` | 消息毫秒时间戳 |
+| `sync.complete` | 是否已经遍历到来源接口最后一页 |
+| `sync.sourceLatestMessageId` | 获取完整会话时联系人列表的最新消息 ID |
+| `sync.syncedAt` | 最近一次完整会话同步时间 |
+
+BOSS 只保存 `historyMsg` 中存在 `body.text` 的消息；`mid`、`from.uid`、`to.uid`
+和 `time` 分别映射到通用消息字段。非文本卡片不保存，但仍参与分页游标计算。
+
+猎聘从 `chat-list.data.list` 读取消息，将字符串化 `payload` 中
+`bodies[].msg` 合并为正文；`msgId` 和 `msgTime` 分别映射为消息 ID 与时间。
+`direction=0` 时 `userId` 为发送者，`direction=1` 时 `oppositeUserId` 为发送者。
+没有正文和已撤回的消息不保存，但仍参与 `maxMessageId` 分页与完整性判断。
+
+扩展主动发送消息成功后会把已有会话标记为不完整，等待下一次平台同步重新确认全量
+上下文。
+
 ## 7. BOSS 内部结构 `boss`
 
 `boss` 不显示在结果页表格或普通 JSON/CSV 输出中。总览页 `debug=true` 时会进入调试
@@ -606,6 +656,13 @@ CSV 的“内部数据”包含账号和联系人标识，应按敏感备份文�
     "riskPauses": 1,
     "stoppedByRiskControl": false
   },
+  "conversation": {
+    "requested": 7,
+    "success": 6,
+    "failed": 1,
+    "skipped": 0,
+    "messageFailed": 1
+  },
   "saved": false,
   "interrupted": false,
   "completed": true,
@@ -627,6 +684,11 @@ CSV 的“内部数据”包含账号和联系人标识，应按敏感备份文�
 | `jobDetail.skipped` | 跳过数 |
 | `jobDetail.riskPauses` | `code=37` 风控暂停次数 |
 | `jobDetail.stoppedByRiskControl` | 是否因连续风控停止 |
+| `conversation.requested` | 实际发起完整会话同步的记录数 |
+| `conversation.success` | 完整会话同步成功数 |
+| `conversation.failed` | 完整会话同步失败数 |
+| `conversation.skipped` | 已有完整且最新会话，跳过请求的记录数 |
+| `conversation.messageFailed` | 因完整会话失败而没有更新最近消息的记录数 |
 | `saved` | 是否已确认合并到总记录 |
 | `interrupted` | 是否被手动暂停或中断 |
 | `completed` | 本轮是否完成 |

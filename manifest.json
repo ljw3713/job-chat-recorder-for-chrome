@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "直聘|猎聘 沟通助手",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
   "permissions": [
     "activeTab",

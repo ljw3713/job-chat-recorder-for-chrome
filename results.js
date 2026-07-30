@@ -1,5 +1,7 @@
 const meta = document.getElementById('meta');
 const jsonBox = document.getElementById('jsonBox');
+const jsonPreviewTabs = document.getElementById('jsonPreviewTabs');
+const personalTab = document.getElementById('personalTab');
 const tableBox = document.getElementById('tableBox');
 const copyTableBtn = document.getElementById('copyTableBtn');
 const copyJsonBtn = document.getElementById('copyJsonBtn');
@@ -94,7 +96,17 @@ const debugEnabled = featureFlag('debug', isDevelopmentVersion);
 const debugDataEnabled = mode === 'overview' && debugEnabled;
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
-const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey, normalizeJobRef, normalizeJobInfo, isCompleteJobInfo } = globalThis.JobChatRecords;
+const {
+  recruiterInfo,
+  normalizeRecordDate,
+  communicationDate,
+  displayRecordDate,
+  makeRecordKey,
+  normalizeJobRef,
+  normalizeJobInfo,
+  normalizeConversation,
+  isCompleteJobInfo
+} = globalThis.JobChatRecords;
 
 function isResolvedJobInfo(record) {
   return isCompleteJobInfo(record)
@@ -108,8 +120,11 @@ let latestData = null;
 let extractionStatus = null;
 let allRecords = [];
 let currentRecords = [];
+let pageRecords = [];
 let ignoredRecords = [];
 let companyProfiles = {};
+let internalAccountInfo = {};
+let activePreviewTab = 'communication';
 let selectedKeys = new Set();
 let queryValue = '';
 let queryTimer = null;
@@ -123,12 +138,14 @@ let detailRefreshRecords = [];
 let detailRefreshStatuses = new Map();
 let detailRefreshLogs = [];
 let detailRefreshRequestLogs = [];
-let detailRefreshJobDetailStats = null;
+let detailRefreshRecordStats = null;
 let detailRefreshRunId = null;
 let detailRefreshCountdownTimer = null;
 let jobDetailNotSyncedOnly = false;
 let lastOverviewSelectedRecordKey = '';
 let activeSelectionAction = '';
+let currentPage = 1;
+let pageSize = 100;
 
 function updateFeatureFlag(name, enabled) {
   const url = new URL(location.href);
@@ -151,6 +168,74 @@ if (isDevelopmentVersion) {
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者', '状态', '原消息'];
 const tableExportHeaders = ['唯一索引id', ...tableHeaders];
 const csvExportHeaders = debugDataEnabled ? [...tableExportHeaders, '内部数据'] : tableExportHeaders;
+
+if (personalTab) personalTab.style.display = debugEnabled ? '' : 'none';
+
+function uniqueInternalValues(values) {
+  return [...new Set(values.map((value) => normalizeText(value)).filter(Boolean))].sort();
+}
+
+function companyPreviewData() {
+  return Object.values(companyProfiles)
+    .filter((profile) => profile && typeof profile === 'object')
+    .sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), 'zh-Hans-CN'));
+}
+
+function personalPreviewData() {
+  const zhipinUserIds = uniqueInternalValues(internalAccountInfo.zhipinUserIds || []);
+  const liepinUserIds = uniqueInternalValues(internalAccountInfo.liepinUserIds || []);
+  const liepinImClientIds = internalAccountInfo.jobChatLiepinImClientIds
+    && typeof internalAccountInfo.jobChatLiepinImClientIds === 'object'
+    ? internalAccountInfo.jobChatLiepinImClientIds
+    : {};
+  return {
+    zhipin: {
+      userIds: zhipinUserIds,
+      pcDeviceId: normalizeText(internalAccountInfo.jobChatBossPcDeviceId)
+    },
+    liepin: {
+      userIds: liepinUserIds,
+      imClientIds: liepinImClientIds
+    }
+  };
+}
+
+function activePreviewData() {
+  if (activePreviewTab === 'company') return companyPreviewData();
+  if (activePreviewTab === 'personal' && debugEnabled) return personalPreviewData();
+  return toOutputRows(pageRecords);
+}
+
+function selectPreviewTab(tabName) {
+  activePreviewTab = tabName === 'personal' && !debugEnabled
+    ? 'communication'
+    : tabName;
+  jsonPreviewTabs?.querySelectorAll('[data-preview-tab]').forEach((button) => {
+    const active = button.dataset.previewTab === activePreviewTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
+    if (active) jsonBox.setAttribute('aria-labelledby', button.id);
+  });
+  updateJsonBox();
+}
+
+jsonPreviewTabs?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-preview-tab]');
+  if (button) selectPreviewTab(button.dataset.previewTab);
+});
+jsonPreviewTabs?.addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  const tabs = [...jsonPreviewTabs.querySelectorAll('[data-preview-tab]')]
+    .filter((button) => button.style.display !== 'none');
+  const currentIndex = tabs.findIndex((button) => button.dataset.previewTab === activePreviewTab);
+  const direction = event.key === 'ArrowRight' ? 1 : -1;
+  const next = tabs[(currentIndex + direction + tabs.length) % tabs.length];
+  if (!next) return;
+  event.preventDefault();
+  selectPreviewTab(next.dataset.previewTab);
+  next.focus();
+});
 
 function normalizeMessageStatus(value) {
   const text = normalizeText(value);
@@ -433,7 +518,7 @@ function populateFilters() {
   populateSelect(companyFilter, allRecords.map((r) => r.companyName), '全部公司');
 }
 
-function applyFilters() {
+function filterAllRecords() {
   let records = [...allRecords];
   if (todayOnly.checked) records = records.filter(isTodayRecord);
   const source = sourceFilter.value;
@@ -459,12 +544,72 @@ function applyFilters() {
     const result = String(a[field] || '').localeCompare(String(b[field] || ''));
     return direction === 'asc' ? result : -result;
   });
-  currentRecords = records;
   return records;
 }
 
-function toOutputRows() {
-  return currentRecords.map((r) => {
+function paginateRecords(records) {
+  if (mode !== 'overview') {
+    pageRecords = records;
+    return pageRecords;
+  }
+  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  currentPage = Math.max(1, Math.min(currentPage, totalPages));
+  const offset = (currentPage - 1) * pageSize;
+  pageRecords = records.slice(offset, offset + pageSize);
+  return pageRecords;
+}
+
+function applyFilters() {
+  currentRecords = filterAllRecords();
+  return paginateRecords(currentRecords);
+}
+
+function paginationPageNumbers(totalPages) {
+  const pages = new Set([1, totalPages]);
+  for (let page = currentPage - 2; page <= currentPage + 2; page += 1) {
+    if (page >= 1 && page <= totalPages) pages.add(page);
+  }
+  const sorted = [...pages].sort((left, right) => left - right);
+  const output = [];
+  sorted.forEach((page, index) => {
+    if (index && page - sorted[index - 1] > 1) output.push('<span aria-hidden="true">…</span>');
+    output.push(`<button type="button" class="${page === currentPage ? 'active' : ''}" data-page="${page}"${page === currentPage ? ' aria-current="page"' : ''}>${page}</button>`);
+  });
+  return output.join('');
+}
+
+function paginationMarkup() {
+  if (mode !== 'overview') return '';
+  const total = currentRecords.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const from = total ? (currentPage - 1) * pageSize + 1 : 0;
+  const to = total ? Math.min(currentPage * pageSize, total) : 0;
+  const sizes = [20, 50, 100, 200, 500];
+  return `<div class="pagination-bar"><span>显示 ${from}–${to} 条，共 ${total} 条</span><div class="pagination-controls"><button type="button" data-page="${Math.max(1, currentPage - 1)}"${currentPage <= 1 ? ' disabled' : ''}>上一页</button>${paginationPageNumbers(totalPages)}<button type="button" data-page="${Math.min(totalPages, currentPage + 1)}"${currentPage >= totalPages ? ' disabled' : ''}>下一页</button><label class="pagination-size">每页 <select id="pageSizeSelect">${sizes.map((size) => `<option value="${size}"${size === pageSize ? ' selected' : ''}>${size}</option>`).join('')}</select> 条</label></div></div>`;
+}
+
+function bindPaginationControls() {
+  if (mode !== 'overview') return;
+  tableBox.querySelectorAll('[data-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextPage = Math.max(1, Number(button.dataset.page || 1));
+      if (nextPage === currentPage) return;
+      currentPage = nextPage;
+      lastOverviewSelectedRecordKey = '';
+      renderTable();
+    });
+  });
+  const pageSizeSelect = document.getElementById('pageSizeSelect');
+  pageSizeSelect?.addEventListener('change', () => {
+    pageSize = Math.max(1, Number(pageSizeSelect.value || 100));
+    currentPage = 1;
+    lastOverviewSelectedRecordKey = '';
+    renderTable();
+  });
+}
+
+function toOutputRows(records = currentRecords) {
+  return records.map((r) => {
     const output = {
       recordKey: normalizeText(r.recordKey || makeRecordKey(r)),
       sourceName: normalizeText(r.sourceName),
@@ -475,17 +620,17 @@ function toOutputRows() {
       note: normalizeText(r.note),
       messageStatus: messageStatusText(r.messageStatus),
       recruiterInfo: recruiterInfo(r),
-      lastMessage: normalizeText(r.lastMessage),
-      jobRef: normalizeJobRef(r.jobRef),
-      companyKey: normalizeText(r.companyKey || ''),
-      jobInfo: normalizeJobInfo(r.jobInfo)
+      lastMessage: normalizeText(r.lastMessage)
     };
     if (!debugDataEnabled) return output;
     return {
       ...r,
       ...output,
       recruiterName: normalizeText(r.recruiterName),
-      recruiterTitle: normalizeText(r.recruiterTitle)
+      recruiterTitle: normalizeText(r.recruiterTitle),
+      jobRef: normalizeJobRef(r.jobRef),
+      companyKey: normalizeText(r.companyKey || ''),
+      jobInfo: normalizeJobInfo(r.jobInfo)
     };
   });
 }
@@ -517,21 +662,25 @@ function updateMeta() {
   const jobDetailText = jobDetail && Number(jobDetail.requested || 0)
     ? ` · 岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止；可在总览页手动更新）' : ''}`
     : '';
+  const conversation = summary?.conversation;
+  const conversationText = conversation && Number(conversation.requested || 0)
+    ? ` · 完整会话：请求 ${conversation.requested || 0} 条，成功 ${conversation.success || 0} 条，失败 ${conversation.failed || 0} 条，跳过 ${conversation.skipped || 0} 条`
+    : '';
   const title = mode === 'sync' ? (latestData?.siteTitle || '同步结果') : '招聘沟通记录总览';
   pageHeading.textContent = title;
   document.title = title;
 
   if (mode === 'sync') {
-    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${jobDetailText.replace(/(\d+)/g, '<strong>$1</strong>')}`;
+    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${conversationText.replace(/(\d+)/g, '<strong>$1</strong>')}${jobDetailText.replace(/(\d+)/g, '<strong>$1</strong>')}`;
     return;
   }
 
   const todaySynced = allRecords.filter(isSyncedToday).length;
-  meta.innerHTML = `总记录共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 今日同步 ${boldNumber(todaySynced)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')}`;
+  meta.innerHTML = `总记录共 ${boldNumber(total)} 条 · 筛选结果：${boldNumber(visible)} 条 · 本页：${boldNumber(pageRecords.length)} 条 · 今日同步 ${boldNumber(todaySynced)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')}`;
 }
 
 function updateJsonBox() {
-  jsonBox.textContent = JSON.stringify(toOutputRows(), null, 2);
+  jsonBox.textContent = JSON.stringify(activePreviewData(), null, 2);
 }
 
 function toTsv(includeHeader = true) {
@@ -539,8 +688,13 @@ function toTsv(includeHeader = true) {
   return ResultsDb.tsv(tableExportHeaders, rows, includeHeader);
 }
 
+function csvExportRecords() {
+  const selected = selectedRecords();
+  return selected.length ? selected : allRecords;
+}
+
 function toCsv() {
-  const rows = currentRecords.map((record) => {
+  const rows = csvExportRecords().map((record) => {
     const output = {
       recordKey: normalizeText(record.recordKey || makeRecordKey(record)),
       sourceName: normalizeText(record.sourceName),
@@ -742,11 +896,11 @@ function bindEditableCells() {
       activeSelectionAction = '';
       const recordKey = checkbox.value;
       const canRangeSelect = mode === 'overview' && (event.shiftKey || checkbox.dataset.shiftKey === '1') && lastOverviewSelectedRecordKey;
-      const startIndex = canRangeSelect ? currentRecords.findIndex((record) => record.recordKey === lastOverviewSelectedRecordKey) : -1;
-      const endIndex = currentRecords.findIndex((record) => record.recordKey === recordKey);
+      const startIndex = canRangeSelect ? pageRecords.findIndex((record) => record.recordKey === lastOverviewSelectedRecordKey) : -1;
+      const endIndex = pageRecords.findIndex((record) => record.recordKey === recordKey);
       if (startIndex >= 0 && endIndex >= 0) {
         const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
-        currentRecords.slice(from, to + 1).forEach((record) => {
+        pageRecords.slice(from, to + 1).forEach((record) => {
           if (checkbox.checked) selectedKeys.add(record.recordKey);
           else selectedKeys.delete(record.recordKey);
         });
@@ -766,7 +920,7 @@ function bindEditableCells() {
   if (selectAll) {
     selectAll.addEventListener('change', () => {
       activeSelectionAction = '';
-      currentRecords.forEach((record) => {
+      pageRecords.forEach((record) => {
         if (selectAll.checked) selectedKeys.add(record.recordKey);
         else selectedKeys.delete(record.recordKey);
       });
@@ -779,8 +933,8 @@ function bindEditableCells() {
 function updateSelectAllCheckbox() {
   const selectAll = document.getElementById('selectAllRows');
   if (!selectAll) return;
-  const total = currentRecords.length;
-  const selected = currentRecords.filter((record) => selectedKeys.has(record.recordKey)).length;
+  const total = pageRecords.length;
+  const selected = pageRecords.filter((record) => selectedKeys.has(record.recordKey)).length;
   selectAll.checked = total > 0 && selected === total;
   selectAll.indeterminate = selected > 0 && selected < total;
 }
@@ -791,6 +945,8 @@ function bindJobDetailNotSyncedFilter() {
   checkbox.checked = jobDetailNotSyncedOnly;
   checkbox.addEventListener('change', () => {
     jobDetailNotSyncedOnly = checkbox.checked;
+    currentPage = 1;
+    lastOverviewSelectedRecordKey = '';
     selectedKeys.clear();
     renderTable();
   });
@@ -799,6 +955,10 @@ function bindJobDetailNotSyncedFilter() {
 function updateDeleteButton() {
   if (!deleteSelectedBtn) return;
   const showCount = (action) => selectedKeys.size && (mode !== 'overview' || !activeSelectionAction || activeSelectionAction === action);
+  const selectedCount = selectedRecords().length;
+  if (downloadCsvBtn) {
+    downloadCsvBtn.textContent = selectedCount ? `下载 CSV（${selectedCount}）` : '下载 CSV';
+  }
   deleteSelectedBtn.textContent = showCount('delete') ? `删除选中（${selectedKeys.size}）` : '删除选中';
   deleteSelectedBtn.disabled = selectedKeys.size === 0;
   if (updateDetailsBtn) {
@@ -822,6 +982,7 @@ function updateDeleteButton() {
 function showJobInfoCard(target, record) {
   if (!jobInfoCard) return;
   clearTimeout(jobInfoHideTimer);
+  jobInfoCard.classList.remove('conversation-mode');
   const info = normalizeJobInfo(record.jobInfo);
   const empty = !info.skills.length && !info.description;
   const emptyLiepinPreview = (record?.siteKey === 'liepin' || record?.sourceName === '猎聘')
@@ -839,6 +1000,7 @@ function showJobInfoCard(target, record) {
 function showCompanyInfoCard(target, record) {
   if (!jobInfoCard) return;
   clearTimeout(jobInfoHideTimer);
+  jobInfoCard.classList.remove('conversation-mode');
   const companyKey = normalizeText(record?.companyKey);
   const profile = companyKey && companyProfiles[companyKey] && typeof companyProfiles[companyKey] === 'object'
     ? companyProfiles[companyKey]
@@ -854,12 +1016,53 @@ function showCompanyInfoCard(target, record) {
   positionInfoCard(target);
 }
 
-function positionInfoCard(target) {
+function completeConversation(record) {
+  if (!record?.conversation || typeof record.conversation !== 'object') return null;
+  const conversation = normalizeConversation(record.conversation);
+  return conversation.sync.complete && conversation.messages.length ? conversation : null;
+}
+
+function conversationMessageTime(timestamp) {
+  const date = new Date(Number(timestamp));
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function showConversationCard(target, record) {
+  if (!jobInfoCard) return;
+  const conversation = completeConversation(record);
+  if (!conversation) return;
+  clearTimeout(jobInfoHideTimer);
+  jobInfoCard.classList.add('conversation-mode');
+  const currentUserId = normalizeText(
+    conversation.currentUserId
+    || record?.boss?.ownerUserId
+    || record?.liepin?.imId
+  );
+  const recruiterLabel = normalizeText(record?.recruiterName) || '招聘者';
+  const messages = conversation.messages.map((message) => {
+    const outgoing = Boolean(currentUserId && normalizeText(message.fromUserId) === currentUserId);
+    const label = outgoing ? '我' : recruiterLabel;
+    const time = conversationMessageTime(message.timestamp);
+    return `<div class="conversation-row ${outgoing ? 'outgoing' : 'incoming'}"><div class="conversation-bubble"><div class="conversation-message-meta">${escapeHtml([label, time].filter(Boolean).join(' · '))}</div><p class="conversation-message-text">${escapeHtml(message.text)}</p></div></div>`;
+  }).join('');
+  const title = [normalizeText(record.companyName), normalizeText(record.jobName)].filter(Boolean).join(' · ') || '完整会话';
+  jobInfoCard.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="job-info-meta">共 ${conversation.messages.length} 条文本消息 · 按时间顺序</div><div class="conversation-list">${messages}</div>`;
+  jobInfoCard.scrollTop = 0;
+  positionInfoCard(target, { alignRightToTargetCenter: true });
+}
+
+function positionInfoCard(target, options = {}) {
   if (!jobInfoCard) return;
   const rect = target.getBoundingClientRect();
   jobInfoCard.classList.add('show');
   const cardRect = jobInfoCard.getBoundingClientRect();
-  const left = Math.max(12, Math.min(window.innerWidth - cardRect.width - 12, rect.left + rect.width / 2));
+  const targetCenter = rect.left + rect.width / 2;
+  const preferredLeft = options.alignRightToTargetCenter
+    ? targetCenter - cardRect.width
+    : targetCenter;
+  const left = Math.max(12, Math.min(window.innerWidth - cardRect.width - 12, preferredLeft));
   const top = rect.bottom + cardRect.height <= window.innerHeight ? rect.bottom : Math.max(12, rect.top - cardRect.height);
   jobInfoCard.style.left = `${left}px`;
   jobInfoCard.style.top = `${top}px`;
@@ -945,14 +1148,15 @@ function renderUpdateDetailsModal() {
   const statuses = detailRefreshRecords.map((record) => detailRefreshStatuses.get(record.recordKey) || {});
   const success = statuses.filter((status) => status.status === '成功').length;
   const failed = statuses.filter((status) => status.status === '失败').length;
-  const completed = success + failed;
-  const jobDetail = detailRefreshJobDetailStats;
-  const jobDetailText = jobDetail
-    ? `<span>岗位详情：请求 ${jobDetail.requested || 0} 条，成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（安全验证停止）' : ''}</span>`
-    : '';
-  updateDetailsTitle.textContent = `更新岗位详情（${total}）`;
-  updateDetailsSummary.innerHTML = `<span>待同步总数：${total} 条</span><span class="refresh-counts"><span>已同步：${success} 条</span><span>失败：${failed} 条</span>${jobDetailText}</span>`;
-  updateDetailsProgressBar.style.width = `${total ? Math.round(completed / total * 100) : 0}%`;
+  const recordStats = detailRefreshRecordStats;
+  const displayedSuccess = recordStats ? Number(recordStats.success || 0) : success;
+  const displayedFailed = recordStats ? Number(recordStats.failed || 0) : failed;
+  const skipped = recordStats ? Number(recordStats.skipped || 0) : statuses.filter((status) => status.status === '跳过' || status.status === '已停止').length;
+  const riskControls = Number(recordStats?.riskControls || 0);
+  const displayedCompleted = displayedSuccess + displayedFailed + skipped;
+  updateDetailsTitle.textContent = `更新岗位与消息（${total}）`;
+  updateDetailsSummary.innerHTML = `<span>待同步总数：${total} 条</span><span class="refresh-counts"><span>成功：${displayedSuccess} 条</span><span>失败：${displayedFailed} 条</span><span>跳过：${skipped} 条</span><span>触发风控：${riskControls} 次</span></span>`;
+  updateDetailsProgressBar.style.width = `${total ? Math.round(displayedCompleted / total * 100) : 0}%`;
   if (updateDetailsRefreshNote) updateDetailsRefreshNote.style.display = total ? '' : 'none';
   [updateDetailsRate, updateDetailsRetryDelay, updateDetailsRetryCount].forEach((input) => {
     if (input) input.disabled = detailsUpdating;
@@ -982,7 +1186,7 @@ async function openUpdateDetailsModal() {
   if (!records.length) return;
   const siteKeys = new Set(records.map((record) => record.siteKey || (record.sourceName === '猎聘' ? 'liepin' : (record.sourceName === 'BOSS直聘' ? 'boss' : ''))));
   if (siteKeys.size !== 1 || !['boss', 'liepin'].includes([...siteKeys][0])) {
-    alert('请选择同一个招聘网站的记录后再更新岗位详情。');
+    alert('请选择同一个招聘网站的记录后再更新岗位与消息。');
     return;
   }
   const selectedRecordKeys = new Set(records.map((record) => record.recordKey));
@@ -994,7 +1198,7 @@ async function openUpdateDetailsModal() {
   } else {
     detailRefreshRecords = records;
     detailRefreshStatuses = new Map(records.map((record) => [record.recordKey, { status: '等待同步' }]));
-    detailRefreshJobDetailStats = null;
+    detailRefreshRecordStats = null;
     detailRefreshLogs = [];
     detailRefreshRequestLogs = [];
   }
@@ -1049,7 +1253,7 @@ async function startOrStopDetailRefresh() {
   retryRecords.forEach((record) => detailRefreshStatuses.set(record.recordKey, { status: '等待同步', error: '' }));
   detailRefreshLogs = [];
   detailRefreshRequestLogs = [];
-  detailRefreshJobDetailStats = null;
+  detailRefreshRecordStats = null;
   renderUpdateDetailsModal();
   updateDeleteButton();
   chrome.storage.local.set({
@@ -1059,15 +1263,15 @@ async function startOrStopDetailRefresh() {
   }).then(() => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_SELECTED', recordKeys: retryRecords.map((record) => record.recordKey), storageScope: mode === 'sync' ? 'pending' : 'total', rate, retryDelaySeconds, retryCount, debugLog: sendLogEnabled, runId }))
     .then(async (response) => {
       if (detailRefreshRunId !== runId) return;
-      detailRefreshJobDetailStats = response?.jobDetail || null;
+      detailRefreshRecordStats = response?.recordStats || null;
       (response?.results || []).forEach((result) => {
         detailRefreshStatuses.set(result.recordKey, {
-          status: result.ok ? '成功' : '失败',
+          status: result.skipped ? '跳过' : (result.ok ? '成功' : '失败'),
           error: result.error || ''
         });
       });
       if (!response?.ok) {
-        markUnfinishedDetailRefreshFailed(response?.error || '更新详情失败。');
+        markUnfinishedDetailRefreshFailed(response?.error || '更新岗位与消息失败。');
       }
       detailsUpdating = false;
       updateDetailRefreshCountdownTimer();
@@ -1152,9 +1356,10 @@ function renderTable() {
       </tr>
     </thead>`;
   if (!records.length) {
-    tableBox.innerHTML = `<table>${tableHeader}<tbody><tr><td class="empty" colspan="10">没有符合条件的记录。</td></tr></tbody></table>`;
+    tableBox.innerHTML = `<table>${tableHeader}<tbody><tr><td class="empty" colspan="10">没有符合条件的记录。</td></tr></tbody></table>${paginationMarkup()}`;
     bindEditableCells();
     bindJobDetailNotSyncedFilter();
+    bindPaginationControls();
     return;
   }
   tableBox.innerHTML = `
@@ -1172,12 +1377,14 @@ function renderTable() {
             <td class="note-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="note" title="双击编辑备注">${escapeHtml(r.note || '')}</td>
             <td class="recruiter-cell">${escapeHtml(recruiterInfo(r))}</td>
             <td class="status-cell">${escapeHtml(messageStatusText(r.messageStatus))}</td>
-            <td class="message-cell">${escapeHtml(r.lastMessage)}</td>
+            <td class="message-cell${completeConversation(r) ? ' message-hover-target' : ''}" data-key="${escapeHtml(r.recordKey)}"${completeConversation(r) ? ' tabindex="0" title="悬浮查看完整会话"' : ''}>${escapeHtml(r.lastMessage)}</td>
           </tr>`).join('')}
       </tbody>
-    </table>`;
+    </table>
+    ${paginationMarkup()}`;
   bindEditableCells();
   bindJobDetailNotSyncedFilter();
+  bindPaginationControls();
   tableBox.querySelectorAll('.company-hover-target').forEach((target) => {
     const record = allRecords.find((item) => item.recordKey === target.dataset.key);
     if (!record) return;
@@ -1194,6 +1401,14 @@ function renderTable() {
     target.addEventListener('focus', () => showJobInfoCard(target, record));
     target.addEventListener('blur', scheduleJobInfoCardHide);
   });
+  tableBox.querySelectorAll('.message-hover-target').forEach((target) => {
+    const record = allRecords.find((item) => item.recordKey === target.dataset.key);
+    if (!record) return;
+    target.addEventListener('mouseenter', () => showConversationCard(target, record));
+    target.addEventListener('mouseleave', scheduleJobInfoCardHide);
+    target.addEventListener('focus', () => showConversationCard(target, record));
+    target.addEventListener('blur', scheduleJobInfoCardHide);
+  });
 }
 
 async function loadAndRenderLatest() {
@@ -1203,6 +1418,16 @@ async function loadAndRenderLatest() {
   companyProfiles = result.jobChatCompanyProfiles && typeof result.jobChatCompanyProfiles === 'object'
     ? result.jobChatCompanyProfiles
     : {};
+  const accountRecords = [
+    ...(Array.isArray(result.jobChatRecords) ? result.jobChatRecords : []),
+    ...(Array.isArray(result.jobChatPendingRecords?.records) ? result.jobChatPendingRecords.records : [])
+  ];
+  internalAccountInfo = debugEnabled ? {
+    zhipinUserIds: uniqueInternalValues(accountRecords.map((record) => record?.boss?.ownerUserId)),
+    liepinUserIds: uniqueInternalValues(accountRecords.map((record) => record?.liepin?.imId)),
+    jobChatBossPcDeviceId: result.jobChatBossPcDeviceId || '',
+    jobChatLiepinImClientIds: result.jobChatLiepinImClientIds || {}
+  } : {};
 
   if (mode === 'sync') {
     latestData = result.jobChatPendingRecords || result.bossChatStatsLatest || { total: 0, records: [] };
@@ -1345,13 +1570,21 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 [todayOnly, sourceFilter, companyFilter, messageStatusFilter, dateFieldFilter, dateFrom, dateTo, sortBy].forEach((el) => el?.addEventListener('change', () => {
+  currentPage = 1;
+  lastOverviewSelectedRecordKey = '';
   selectedKeys.clear();
   renderTable();
 }));
 
 if (queryInput) queryInput.addEventListener('input', () => {
   clearTimeout(queryTimer);
-  queryTimer = setTimeout(() => { queryValue = normalizeText(queryInput.value); selectedKeys.clear(); renderTable(); }, 1000);
+  queryTimer = setTimeout(() => {
+    queryValue = normalizeText(queryInput.value);
+    currentPage = 1;
+    lastOverviewSelectedRecordKey = '';
+    selectedKeys.clear();
+    renderTable();
+  }, 1000);
 });
 
 saveBtn.addEventListener('click', async () => {
@@ -1402,7 +1635,7 @@ function closeUpdateDetailsModal() {
   if (mode !== 'overview' || detailsUpdating) return;
   detailRefreshRecords = [];
   detailRefreshStatuses = new Map();
-  detailRefreshJobDetailStats = null;
+  detailRefreshRecordStats = null;
   detailRefreshRunId = null;
   detailRefreshLogs = [];
   detailRefreshRequestLogs = [];
@@ -1621,7 +1854,7 @@ copyTableBtn.addEventListener('click', async () => {
 });
 
 copyJsonBtn.addEventListener('click', async () => {
-  await navigator.clipboard.writeText(JSON.stringify(toOutputRows(), null, 2));
+  await navigator.clipboard.writeText(JSON.stringify(activePreviewData(), null, 2));
   copyJsonBtn.textContent = '已复制 JSON';
   setTimeout(() => (copyJsonBtn.textContent = '复制 JSON'), 1200);
 });

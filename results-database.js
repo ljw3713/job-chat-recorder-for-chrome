@@ -182,7 +182,9 @@
       'jobChatRecords',
       'bossChatStatsLatest',
       'jobChatIgnoredRecords',
-      'jobChatCompanyProfiles'
+      'jobChatCompanyProfiles',
+      'jobChatBossPcDeviceId',
+      'jobChatLiepinImClientIds'
     ]);
   }
 

@@ -1,6 +1,6 @@
 (function () {
   const { normalizeText } = globalThis.JobChatUtils;
-  const { normalizeRecordDate, makeRecordKey, normalizeStoredRecord } = globalThis.JobChatRecords;
+  const { normalizeRecordDate, makeRecordKey, normalizeStoredRecord, mergeConversation } = globalThis.JobChatRecords;
 
   function prepareRecord(rawRecord, site) {
     const updatedDate = normalizeRecordDate(rawRecord.time || rawRecord.updatedDate || rawRecord.applicationDate);
@@ -46,12 +46,14 @@
     incoming.forEach((record) => {
       const old = byKey.get(record.recordKey);
       if (old) {
+        const conversation = mergeConversation(old.conversation, record.conversation);
         byKey.set(record.recordKey, {
           ...old,
           ...record,
           boss: { ...(old.boss || {}), ...(record.boss || {}) },
           jobRef: { ...(old.jobRef || {}), ...(record.jobRef || {}) },
           jobInfo: record.jobInfo || old.jobInfo || {},
+          ...(conversation ? { conversation } : {}),
           note: old.note || record.note || '',
           applicationDate: old.applicationDate || record.applicationDate,
           updatedDate: record.updatedDate || old.updatedDate,
@@ -98,6 +100,7 @@
         updated: Number(summary.updated || 0),
         updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
         jobDetail: summary.jobDetail || undefined,
+        conversation: summary.conversation || undefined,
         saved: false,
         interrupted: Boolean(extractedData.interrupted),
         completed: !extractedData.interrupted,
@@ -133,6 +136,7 @@
         updated: Number(summary.updated || 0),
         updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
         jobDetail: summary.jobDetail || undefined,
+        conversation: summary.conversation || undefined,
         saved: false,
         interrupted: Boolean(partial.interrupted),
         completed: Boolean(partial.completed),
@@ -171,6 +175,7 @@
         updated: merged.updated,
         updatedMsg: Number(pending?.syncSummary?.updatedMsg || pending?.syncSummary?.updated || merged.updated || 0),
         jobDetail: pending?.syncSummary?.jobDetail || undefined,
+        conversation: pending?.syncSummary?.conversation || undefined,
         saved: true
       }
     };

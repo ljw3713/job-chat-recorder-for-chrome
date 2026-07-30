@@ -287,6 +287,17 @@
     return normalizeText(record?.messageStatus || record?.boss?.messageStatus || '');
   }
 
+  function createConversationSyncStats() {
+    return { requested: 0, success: 0, failed: 0, skipped: 0, messageFailed: 0 };
+  }
+
+  function bossConversationIsCurrent(record, item) {
+    return globalThis.JobChatRecords.conversationIsCompleteForLatest(
+      record,
+      bossLastMsgIdFromItem(item)
+    );
+  }
+
   function findBossRecordByItem(map, item) {
     return bossItemKeys(item).map((key) => map.get(key)).find(Boolean) || null;
   }
@@ -333,18 +344,24 @@
     };
   }
 
-  function bossSyncSummary(insertedCount, updatedMsgCount, jobDetail = createJobDetailSyncStats()) {
+  function bossSyncSummary(
+    insertedCount,
+    updatedMsgCount,
+    jobDetail = createJobDetailSyncStats(),
+    conversation = createConversationSyncStats()
+  ) {
     return {
       inserted: insertedCount,
       updated: updatedMsgCount,
       updatedMsg: updatedMsgCount,
-      jobDetail
+      jobDetail,
+      conversation
     };
   }
 
-  async function saveBossPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0, jobDetail) {
+  async function saveBossPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0, jobDetail, conversation) {
     return savePartial('boss', 'BOSS直聘沟通记录', 'BOSS直聘', records, synced, total, interrupted, completed, {
-      syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetail)
+      syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetail, conversation)
     });
   }
 
@@ -569,6 +586,121 @@
     reportBossSendLog(`发送预检 HTTP 响应：GET /wapi/zpchat/geek/getBossData；HTTP ${response.status}；code=${data?.code}`);
     if (data?.code !== 0) throw new Error(`BOSS直聘联系人数据接口返回异常：code=${data?.code}，${normalizeText(data?.message || '')}`.slice(0, 300));
     return data?.zpData || {};
+  }
+
+  function oldestBossHistoryMessageId(messages) {
+    return (Array.isArray(messages) ? messages : []).reduce((oldest, message) => {
+      const id = normalizeText(message?.mid);
+      if (!/^\d+$/.test(id)) return oldest;
+      if (!oldest) return id;
+      try { return BigInt(id) < BigInt(oldest) ? id : oldest; } catch (_) { return id < oldest ? id : oldest; }
+    }, '');
+  }
+
+  function normalizeBossConversationMessage(message) {
+    if (typeof message?.body?.text !== 'string') return null;
+    return globalThis.JobChatRecords.normalizeConversationMessage({
+      id: message.mid,
+      text: message.body.text,
+      fromUserId: message.from?.uid,
+      toUserId: message.to?.uid,
+      timestamp: message.time
+    });
+  }
+
+  async function fetchBossConversation(item, currentUserId, options = {}) {
+    const bossId = bossIdOfItem(item);
+    const securityId = normalizeText(item?.securityId);
+    if (!bossId || !securityId) throw new Error('BOSS 完整会话请求缺少 bossId 或 securityId。');
+
+    const messagesById = new Map();
+    const seenCursors = new Set();
+    let page = 1;
+    let maxMsgId = '0';
+    const maxPages = 200;
+
+    while (page <= maxPages) {
+      if (options.signal?.aborted || await options.shouldStop?.()) throw bossRefreshStoppedError();
+      if (page > 1 && !options.beforeRequest) await sleep(await getSyncDelayMs());
+      await options.beforeRequest?.();
+
+      const url = new URL('https://www.zhipin.com/wapi/zpchat/geek/historyMsg');
+      url.searchParams.set('bossId', bossId);
+      url.searchParams.set('maxMsgId', maxMsgId);
+      url.searchParams.set('c', '20');
+      url.searchParams.set('page', String(page));
+      url.searchParams.set('src', String(item?.friendSource ?? item?.sourceType ?? 0));
+      url.searchParams.set('securityId', securityId);
+      await appendRequestLog({
+        siteKey: 'boss',
+        step: 'conversationHistory:request',
+        method: 'GET',
+        page,
+        maxMsgId: maxMsgId === '0' ? '0' : '[hidden]'
+      });
+
+      const response = await bossPageRequest(url.toString(), {
+        method: 'GET',
+        headers: bossHeaders(),
+        signal: options.signal
+      });
+      let payload = null;
+      try { payload = JSON.parse(response.responseText); } catch (_) {}
+      if (!response.ok) {
+        const error = new Error(`BOSS 完整会话请求失败：HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      if (!payload) throw new Error('BOSS 完整会话接口未返回 JSON。');
+      if (payload.code !== 0) {
+        throw new Error(`BOSS 完整会话接口返回异常：code=${payload.code}，${normalizeText(payload.message || '')}`.slice(0, 300));
+      }
+
+      const rawMessages = Array.isArray(payload?.zpData?.messages) ? payload.zpData.messages : [];
+      rawMessages.forEach((rawMessage) => {
+        const message = normalizeBossConversationMessage(rawMessage);
+        if (message?.id && message.text) messagesById.set(message.id, message);
+      });
+      const hasMore = payload?.zpData?.hasMore === true;
+      await appendRequestLog({
+        siteKey: 'boss',
+        step: 'conversationHistory:response',
+        status: response.status,
+        page,
+        rawMessageCount: rawMessages.length,
+        textMessageCount: rawMessages.filter((message) => typeof message?.body?.text === 'string').length,
+        hasMore
+      });
+      options.onLog?.({
+        step: 'conversationHistory:response',
+        message: `完整会话第 ${page} 页：原始 ${rawMessages.length} 条，文本 ${messagesById.size} 条，hasMore=${hasMore}`
+      });
+      if (!hasMore) {
+        return globalThis.JobChatRecords.normalizeConversation({
+          version: 1,
+          currentUserId,
+          messages: [...messagesById.values()],
+          sync: {
+            complete: true,
+            sourceLatestMessageId: bossLastMsgIdFromItem(item),
+            syncedAt: new Date().toISOString()
+          }
+        });
+      }
+
+      const responseMinMsgId = normalizeText(payload?.zpData?.minMsgId);
+      const nextCursor = /^\d+$/.test(responseMinMsgId)
+        ? responseMinMsgId
+        : oldestBossHistoryMessageId(rawMessages);
+      if (!nextCursor || seenCursors.has(nextCursor) || nextCursor === maxMsgId) {
+        throw new Error('BOSS 完整会话分页游标无效，已停止保存不完整会话。');
+      }
+      seenCursors.add(nextCursor);
+      maxMsgId = nextCursor;
+      page += 1;
+    }
+
+    throw new Error(`BOSS 完整会话超过 ${maxPages} 页，已停止保存不完整会话。`);
   }
 
   function safeJobDetailError(error) {
@@ -914,13 +1046,31 @@
     let insertedCount = 0;
     let updatedMsgCount = 0;
     const jobDetailStats = createJobDetailSyncStats();
+    const conversationStats = createConversationSyncStats();
+    const currentSyncSummary = () => bossSyncSummary(
+      insertedCount,
+      updatedMsgCount,
+      jobDetailStats,
+      conversationStats
+    );
+    const saveCurrentPartial = (interrupted, completed) => saveBossPartial(
+      records,
+      syncedCount,
+      totalToSync,
+      interrupted,
+      completed,
+      insertedCount,
+      updatedMsgCount,
+      jobDetailStats,
+      conversationStats
+    );
     const jobDetailSession = new globalThis.JobChatJobSync.JobDetailSyncSession({
       requestIntervalMs: 2000,
       maxRequestsPerPage: 4
     });
     const progressCategories = () => ({
       communication: {
-        completed: insertedCount + updatedMsgCount,
+        completed: insertedCount + updatedMsgCount + conversationStats.messageFailed,
         total: communicationTotal
       },
       jobDetail: {
@@ -937,12 +1087,12 @@
       jobDetailRequired: jobDetailTotal > 0,
       message: bossSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
     });
-    await saveBossPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
+    await saveCurrentPartial(false, syncedCount >= totalToSync);
 
     for (let i = 0; i < itemsToSync.length; i += 1) {
       const item = itemsToSync[i];
       if (await isCancelRequested()) {
-        await saveBossPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+        await saveCurrentPartial(true, false);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
@@ -951,7 +1101,7 @@
           synced: syncedCount,
           interrupted: true,
           sourceTotal: allItemsToSync.length,
-          syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+          syncSummary: currentSyncSummary(),
           records
         };
       }
@@ -961,9 +1111,60 @@
       const isUpdate = Boolean(existingRecord);
       const syncNeeds = bossItemSyncNeeds(item, savedMap, pendingMap);
       const existingIndex = records.findIndex((record) => bossRecordMatchesItem(record, item));
+      let conversation = existingRecord?.conversation;
+      if (bossConversationIsCurrent(existingRecord, item)) {
+        conversationStats.skipped += 1;
+      } else {
+        conversationStats.requested += 1;
+        try {
+          conversation = await fetchBossConversation(item, ownerUserId, {
+            shouldStop: isCancelRequested
+          });
+          conversationStats.success += 1;
+        } catch (error) {
+          if (await isCancelRequested()) {
+            await saveCurrentPartial(true, false);
+            return {
+              pageTitle: document.title || '',
+              pageUrl: location.href,
+              extractedAt: new Date().toISOString(),
+              total: records.length,
+              synced: syncedCount,
+              interrupted: true,
+              sourceTotal: allItemsToSync.length,
+              syncSummary: currentSyncSummary(),
+              records
+            };
+          }
+          conversationStats.failed += 1;
+          if (syncNeeds.message) conversationStats.messageFailed += 1;
+          if (syncNeeds.jobDetail) jobDetailStats.failed += 1;
+          syncedCount += 1;
+          const errorMessage = safeJobDetailError(error) || '完整会话同步失败。';
+          await appendRequestLog({
+            siteKey: 'boss',
+            step: 'conversationHistory:error',
+            recordKey: bossItemRecordKey(item),
+            error: errorMessage
+          });
+          reportProgress('boss', 'BOSS直聘沟通记录', 'BOSS直聘', syncedCount, totalToSync, {
+            inserted: insertedCount,
+            updated: updatedMsgCount,
+            updatedMsg: updatedMsgCount,
+            progressCategories: progressCategories(),
+            jobDetailRequired: jobDetailTotal > 0,
+            message: `完整会话同步失败，已保留旧记录：${errorMessage}`
+          });
+          await saveCurrentPartial(false, syncedCount >= totalToSync);
+          continue;
+        }
+      }
       let detail = null;
       try { detail = await fetchBossData(item); } catch (_) { detail = null; }
-      const baseRecord = bossListItemToRecord(item, detail, existingIndex >= 0 ? existingIndex : records.length, existingRecord, ownerUserId);
+      const baseRecord = {
+        ...bossListItemToRecord(item, detail, existingIndex >= 0 ? existingIndex : records.length, existingRecord, ownerUserId),
+        ...(conversation ? { conversation } : {})
+      };
       const needsJobDetail = !globalThis.JobChatJobSync.isCompleteJobInfo(baseRecord);
       let nextRecord = baseRecord;
       if (jobDetailStats.stoppedByRiskControl) {
@@ -986,7 +1187,7 @@
             interrupted: false,
             sourceTotal: allItemsToSync.length,
             periodicReloadRequired: true,
-            syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+            syncSummary: currentSyncSummary(),
             records
           };
         }
@@ -999,7 +1200,7 @@
             jobDetailStats.riskPauses += 1;
             const retryNumber = activeRetryCount + 1;
             await appendRequestLog({ siteKey: 'boss', step: 'jobDetail:riskReload', attempt: retryNumber, recordKey: bossItemRecordKey(item) });
-            await saveBossPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+            await saveCurrentPartial(true, false);
             return {
               pageTitle: document.title || '',
               pageUrl: location.href,
@@ -1010,7 +1211,7 @@
               sourceTotal: allItemsToSync.length,
               reloadRequired: true,
               retryRecordKey: baseRecord.recordKey || bossItemRecordKey(item),
-              syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+              syncSummary: currentSyncSummary(),
               records
             };
           }
@@ -1037,9 +1238,9 @@
         jobDetailRequired: jobDetailTotal > 0,
         message: bossSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount)
       });
-      await saveBossPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
+      await saveCurrentPartial(false, syncedCount >= totalToSync);
       if (jobDetailStats.stoppedByRiskControl) {
-        await saveBossPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+        await saveCurrentPartial(true, false);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
@@ -1048,7 +1249,7 @@
           synced: syncedCount,
           interrupted: true,
           sourceTotal: allItemsToSync.length,
-          syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+          syncSummary: currentSyncSummary(),
           records
         };
       }
@@ -1062,7 +1263,7 @@
       synced: syncedCount,
       interrupted: false,
       sourceTotal: allItemsToSync.length,
-      syncSummary: bossSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+      syncSummary: currentSyncSummary(),
       periodicReloadRequired: false,
       records
     };
@@ -1161,6 +1362,7 @@
     const updated = [];
     const results = [];
     const jobDetailStats = createJobDetailSyncStats();
+    const conversationStats = createConversationSyncStats();
     const retryOptions = bossJobRetryOptions(options);
     const jobDetailSession = new globalThis.JobChatJobSync.JobDetailSyncSession({
       requestIntervalMs: 2000,
@@ -1199,17 +1401,84 @@
         notify({ recordKey: record.recordKey, status: '失败', error: '目标无法在当前联系人列表中精确匹配。', completed: index + 1, total: orderedTargets.length });
         continue;
       }
+      let conversation = record?.conversation;
+      let conversationSkipped = false;
+      if (bossConversationIsCurrent(record, item)) {
+        conversationStats.skipped += 1;
+        conversationSkipped = true;
+      } else {
+        conversationStats.requested += 1;
+        try {
+          conversation = await fetchBossConversation(item, ownerUserId, {
+            beforeRequest,
+            shouldStop: options.shouldStop,
+            signal: options.signal,
+            onLog: options.onLog
+          });
+          conversationStats.success += 1;
+        } catch (error) {
+          if (isBossRefreshStopped(error, options.signal)) break;
+          conversationStats.failed += 1;
+          jobDetailStats.failed += 1;
+          const errorMessage = safeJobDetailError(error) || '完整会话同步失败。';
+          results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
+          notify({
+            recordKey: record.recordKey,
+            status: '失败',
+            error: errorMessage,
+            completed: index + 1,
+            total: orderedTargets.length
+          });
+          options.onLog?.({ step: 'conversationHistory:error', message: `${record.recordKey}：${errorMessage}` });
+          continue;
+        }
+      }
+      const recordWithConversation = conversation ? { ...record, conversation } : record;
+      const needsJobDetail = Boolean(
+        options.forceJobDetail
+        || !globalThis.JobChatJobSync.isCompleteJobInfo(record)
+      );
+      if (!needsJobDetail) {
+        jobDetailStats.skipped += 1;
+        const nextRecord = {
+          ...bossListItemToRecord(item, null, index, recordWithConversation, ownerUserId),
+          ...(conversation ? { conversation } : {})
+        };
+        updated.push(nextRecord);
+        results.push({
+          recordKey: record.recordKey,
+          ok: true,
+          skipped: conversationSkipped,
+          jobInfoStatus: nextRecord.jobInfo?.fetchStatus,
+          error: ''
+        });
+        notify({
+          recordKey: record.recordKey,
+          status: conversationSkipped ? '跳过' : '成功',
+          error: '',
+          completed: index + 1,
+          total: orderedTargets.length,
+          record: nextRecord
+        });
+        continue;
+      }
       const recordJobId = bossRecordJobId(record);
       const itemJobId = bossItemJobId(item);
       if (recordJobId && itemJobId && recordJobId !== itemJobId) {
-        completeAsExpired(record, index);
+        completeAsExpired(recordWithConversation, index);
         continue;
       }
       let detail = null;
       try { detail = await fetchBossData(item, options.onLog, beforeRequest, options.signal); } catch (error) {
         if (isBossRefreshStopped(error, options.signal)) break;
         const errorMessage = safeJobDetailError(error) || '获取 BOSS 数据失败。';
-        const contactRecord = refreshBossContactFields(record, item, null, ownerUserId);
+        const contactRecord = bossListItemToRecord(
+          item,
+          null,
+          index,
+          recordWithConversation,
+          ownerUserId
+        );
         updated.push(contactRecord);
         jobDetailStats.failed += 1;
         results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
@@ -1218,10 +1487,13 @@
       }
       const detailJobId = bossDetailJobId(detail);
       if (recordJobId && detailJobId && recordJobId !== detailJobId) {
-        completeAsExpired(record, index);
+        completeAsExpired(recordWithConversation, index);
         continue;
       }
-      const baseRecord = bossListItemToRecord(item, detail, index, record, ownerUserId);
+      const baseRecord = {
+        ...bossListItemToRecord(item, detail, index, record, ownerUserId),
+        ...(conversation ? { conversation } : {})
+      };
       let nextRecord = baseRecord;
       let jobDetailSkipped = false;
       if (jobDetailStats.stoppedByRiskControl) {
@@ -1231,7 +1503,7 @@
       } else {
         const jobResult = await jobDetailSession.syncRecord(baseRecord, { item, detail }, {
           adapter: globalThis.JobChatSiteAdapters.get('boss'),
-          policy: 'force',
+          policy: options.forceJobDetail ? 'force' : 'missing',
           shouldStop: options.shouldStop,
           signal: options.signal,
           onLog: options.onLog,
@@ -1246,7 +1518,8 @@
             paused: false,
             periodicReloadRequired: true,
             retryRecordKey: record.recordKey,
-            jobDetail: jobDetailStats
+            jobDetail: jobDetailStats,
+            conversation: conversationStats
           };
         }
         if (jobResult.requested) jobDetailStats.requested += 1;
@@ -1271,23 +1544,38 @@
               paused: false,
               reloadRequired: true,
               retryRecordKey: record.recordKey,
-              jobDetail: jobDetailStats
+              jobDetail: jobDetailStats,
+              conversation: conversationStats
             };
           }
           jobDetailStats.stoppedByRiskControl = true;
         }
-        if (nextRecord.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
+        if (jobResult.skipped) jobDetailStats.skipped += 1;
+        else if (nextRecord.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
         else jobDetailStats.failed += 1;
       }
       updated.push(nextRecord);
       const ok = nextRecord.jobInfo?.fetchStatus === 'success';
       const error = nextRecord.jobInfo?.errorMessage || '';
-      results.push({ recordKey: record.recordKey, ok, jobInfoStatus: nextRecord.jobInfo?.fetchStatus, error });
+      results.push({
+        recordKey: record.recordKey,
+        ok,
+        skipped: jobDetailSkipped,
+        jobInfoStatus: nextRecord.jobInfo?.fetchStatus,
+        error
+      });
       notify({ recordKey: record.recordKey, status: jobDetailSkipped ? '已停止' : (ok ? '成功' : '失败'), error, completed: index + 1, total: orderedTargets.length, record: nextRecord });
     }
     const stopped = Boolean(options.signal?.aborted || await options.shouldStop?.());
     const paused = !stopped && jobDetailStats.stoppedByRiskControl;
-    return { records: updated, results, stopped, paused, jobDetail: jobDetailStats };
+    return {
+      records: updated,
+      results,
+      stopped,
+      paused,
+      jobDetail: jobDetailStats,
+      conversation: conversationStats
+    };
   }
 
   function validBossSendTarget(target) {

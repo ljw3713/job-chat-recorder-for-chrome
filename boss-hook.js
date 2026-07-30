@@ -302,7 +302,10 @@
   async function performPageRequest(command) {
     const parsedUrl = new URL(command.url, location.origin);
     if (parsedUrl.origin !== location.origin) throw new Error('只允许请求当前 BOSS 站点。');
-    const allowedPaths = new Set(['/wapi/zpgeek/job/detail.json']);
+    const allowedPaths = new Set([
+      '/wapi/zpgeek/job/detail.json',
+      '/wapi/zpchat/geek/historyMsg'
+    ]);
     if (!allowedPaths.has(parsedUrl.pathname)) throw new Error('不允许的 BOSS 页面请求。');
 
     const controller = new AbortController();

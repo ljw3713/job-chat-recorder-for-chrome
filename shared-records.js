@@ -51,6 +51,86 @@
     return String(value || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
+  function compareMessageIds(left, right) {
+    const leftId = normalizeText(left);
+    const rightId = normalizeText(right);
+    if (/^\d+$/.test(leftId) && /^\d+$/.test(rightId)) {
+      try {
+        const leftNumber = BigInt(leftId);
+        const rightNumber = BigInt(rightId);
+        if (leftNumber < rightNumber) return -1;
+        if (leftNumber > rightNumber) return 1;
+        return 0;
+      } catch (_) {}
+    }
+    return leftId.localeCompare(rightId);
+  }
+
+  function normalizeConversationMessage(value) {
+    const message = value && typeof value === 'object' ? value : {};
+    const timestamp = Number(message.timestamp);
+    return {
+      id: normalizeText(message.id),
+      text: String(message.text ?? '').replace(/\r\n?/g, '\n').trim(),
+      fromUserId: normalizeText(message.fromUserId),
+      toUserId: normalizeText(message.toUserId),
+      timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0
+    };
+  }
+
+  function normalizeConversation(value) {
+    const conversation = value && typeof value === 'object' ? value : {};
+    const sync = conversation.sync && typeof conversation.sync === 'object' ? conversation.sync : {};
+    const messagesById = new Map();
+    (Array.isArray(conversation.messages) ? conversation.messages : []).forEach((rawMessage) => {
+      const message = normalizeConversationMessage(rawMessage);
+      if (!message.id || !message.text) return;
+      messagesById.set(message.id, message);
+    });
+    const messages = [...messagesById.values()].sort((left, right) => (
+      left.timestamp - right.timestamp || compareMessageIds(left.id, right.id)
+    ));
+    return {
+      version: 1,
+      currentUserId: normalizeText(conversation.currentUserId),
+      messages,
+      sync: {
+        complete: sync.complete === true,
+        sourceLatestMessageId: normalizeText(sync.sourceLatestMessageId),
+        syncedAt: normalizeText(sync.syncedAt)
+      }
+    };
+  }
+
+  function mergeConversation(existingValue, incomingValue) {
+    if (!incomingValue || typeof incomingValue !== 'object') {
+      return existingValue && typeof existingValue === 'object'
+        ? normalizeConversation(existingValue)
+        : undefined;
+    }
+    const existing = normalizeConversation(existingValue);
+    const incoming = normalizeConversation(incomingValue);
+    if (incoming.sync.complete) return incoming;
+    if (existing.sync.complete) return existing;
+    return normalizeConversation({
+      ...existing,
+      ...incoming,
+      currentUserId: incoming.currentUserId || existing.currentUserId,
+      messages: [...existing.messages, ...incoming.messages],
+      sync: {
+        ...existing.sync,
+        ...incoming.sync
+      }
+    });
+  }
+
+  function conversationIsCompleteForLatest(record, latestMessageId) {
+    if (!record?.conversation || typeof record.conversation !== 'object') return false;
+    const conversation = normalizeConversation(record.conversation);
+    return conversation.sync.complete
+      && conversation.sync.sourceLatestMessageId === normalizeText(latestMessageId);
+  }
+
   function normalizeJobRef(value) {
     const jobRef = value && typeof value === 'object' ? value : {};
     return {
@@ -133,6 +213,9 @@
       jobInfo: normalizeJobInfo(record?.jobInfo),
       companyKey: normalizeText(record?.companyKey || '')
     };
+    if (record?.conversation && typeof record.conversation === 'object') {
+      normalized.conversation = normalizeConversation(record.conversation);
+    }
     delete normalized.bossJobSecurityId;
     delete normalized.externalJobId;
     delete normalized.jobDetailAccessToken;
@@ -170,6 +253,10 @@
     normalizeStoredRecord,
     normalizeStringList,
     normalizeMultilineText,
+    normalizeConversationMessage,
+    normalizeConversation,
+    mergeConversation,
+    conversationIsCompleteForLatest,
     normalizeJobRef,
     normalizeJobInfo,
     isCompleteJobInfo

@@ -164,6 +164,51 @@
         overflow: hidden;
         table-layout: fixed;
       }
+      .pagination-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: -4px 0 18px;
+        color: #4b5563;
+        font-size: 13px;
+      }
+      .pagination-controls {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .pagination-controls button {
+        min-width: 34px;
+        padding: 6px 9px;
+        background: white;
+        border: 1px solid #d1d5db;
+        color: #374151;
+      }
+      .pagination-controls button.active {
+        border-color: #111827;
+        background: #111827;
+        color: white;
+      }
+      .pagination-controls button:disabled {
+        background: #f3f4f6;
+      }
+      .pagination-size {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: 8px;
+        white-space: nowrap;
+      }
+      .pagination-size select {
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 5px 7px;
+        background: white;
+        color: #374151;
+      }
       th,
       td {
         border-bottom: 1px solid #e5e7eb;
@@ -268,10 +313,42 @@
         padding: 18px;
         color: #6b7280;
       }
-      .section-title {
-        margin: 18px 0 8px;
+      .job-json-preview {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        margin: 18px 0 0;
+        border-bottom: 1px solid #d1d5db;
         font-size: 14px;
         color: #374151;
+      }
+      .job-json-preview button {
+        position: relative;
+        margin-bottom: -1px;
+        border: 1px solid transparent;
+        border-bottom-color: #d1d5db;
+        border-radius: 8px 8px 0 0;
+        padding: 9px 14px;
+        background: transparent;
+        color: #6b7280;
+        font-weight: 500;
+      }
+      .job-json-preview button:hover {
+        color: #111827;
+        background: #f3f4f6;
+      }
+      .job-json-preview button.active {
+        border-color: #d1d5db;
+        border-bottom-color: #111827;
+        background: #111827;
+        color: white;
+      }
+      .job-json-preview + pre {
+        margin-top: 8px;
+      }
+      #jsonBox:focus {
+        outline: 3px solid #60a5fa;
+        outline-offset: 2px;
       }
       .status-card {
         display: none;
@@ -472,8 +549,9 @@
       }
       .refresh-summary .refresh-counts {
         display: inline-flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
         gap: 12px;
-        white-space: nowrap;
       }
       th.action,
       td.action-cell {
@@ -547,6 +625,48 @@
         margin-top: 10px;
         color: #9ca3af;
         font-size: 12px;
+      }
+      .job-info-card.conversation-mode {
+        width: min(560px, calc(100vw - 24px));
+        max-height: min(520px, calc(100vh - 24px));
+      }
+      .conversation-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .conversation-row {
+        display: flex;
+        justify-content: flex-start;
+      }
+      .conversation-row.outgoing {
+        justify-content: flex-end;
+      }
+      .conversation-bubble {
+        max-width: 78%;
+        padding: 9px 11px;
+        border-radius: 10px 10px 10px 2px;
+        background: #374151;
+        box-sizing: border-box;
+      }
+      .conversation-row.outgoing .conversation-bubble {
+        border-radius: 10px 10px 2px 10px;
+        background: #0f766e;
+      }
+      .conversation-message-meta {
+        margin-bottom: 4px;
+        color: #d1d5db;
+        font-size: 11px;
+      }
+      .conversation-row.outgoing .conversation-message-meta {
+        text-align: right;
+        color: #ccfbf1;
+      }
+      .conversation-message-text {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
       @keyframes spin {
         to {
@@ -754,13 +874,56 @@
           </label>
         </div>
         <div class="hint toolbar-hint">
-          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，公司和岗位列可悬浮查看详情。
+          记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并，只更新最新消息和更新时间。备注列可双击编辑，公司、岗位和已完整同步的原消息列可悬浮查看详情。
         </div>
       </div>
       <div id="pageHint" class="hint"></div>
       <div id="tableBox"></div>
-      <div class="section-title">JSON 预览</div>
-      <pre id="jsonBox">loading...</pre>
+      <div
+        id="jsonPreviewTabs"
+        class="job-json-preview"
+        role="tablist"
+        aria-label="JSON 数据预览"
+      >
+        <button
+          id="communicationTab"
+          class="active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="jsonBox"
+          data-preview-tab="communication"
+        >
+          沟通记录
+        </button>
+        <button
+          id="companyTab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="jsonBox"
+          data-preview-tab="company"
+        >
+          公司信息
+        </button>
+        <button
+          id="personalTab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="jsonBox"
+          data-preview-tab="personal"
+          style="display: none"
+        >
+          个人信息
+        </button>
+      </div>
+      <pre
+        id="jsonBox"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="communicationTab"
+      >loading...</pre>
     </main>
     <button
       id="requestLogsBtn"
@@ -791,7 +954,9 @@
           <button id="closeRequestLogsModalBtn" class="light">关闭</button>
         </div>
         <div class="modal-body">
-          <pre id="requestLogsBox" class="log-box" tabindex="0">暂无请求日志。</pre>
+          <pre id="requestLogsBox" class="log-box" tabindex="0">
+暂无请求日志。</pre
+          >
         </div>
       </div>
     </div>
@@ -820,7 +985,12 @@
           </div>
           <p id="sendMessageSummary" class="send-summary"></p>
           <div id="sendMessageTargets" class="send-targets"></div>
-          <pre id="sendMessageLog" class="send-log" tabindex="0" style="display: none">
+          <pre
+            id="sendMessageLog"
+            class="send-log"
+            tabindex="0"
+            style="display: none"
+          >
 尚未开始发送。</pre
           >
         </div>
@@ -829,7 +999,7 @@
     <div id="updateDetailsModal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-header">
-          <h2 id="updateDetailsTitle">更新岗位详情</h2>
+          <h2 id="updateDetailsTitle">更新岗位与消息</h2>
           <button id="closeUpdateDetailsModalBtn" class="light">关闭</button>
         </div>
         <div class="modal-body">

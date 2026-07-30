@@ -10,7 +10,14 @@
     readPreparedSourceList,
     appendRequestLog
   } = globalThis.JobChatContentCommon;
-  const { normalizeJobInfo, isCompleteJobInfo, normalizeMultilineText } = globalThis.JobChatRecords;
+  const {
+    normalizeJobInfo,
+    isCompleteJobInfo,
+    normalizeMultilineText,
+    normalizeConversationMessage,
+    normalizeConversation,
+    conversationIsCompleteForLatest
+  } = globalThis.JobChatRecords;
   let liepinSendBatch = null;
 
   async function readExistingLiepinPending() {
@@ -98,23 +105,43 @@
     return { requested: 0, success: 0, failed: 0, skipped: 0, riskPauses: 0, stoppedByRiskControl: false };
   }
 
+  function createConversationSyncStats() {
+    return { requested: 0, success: 0, failed: 0, skipped: 0, messageFailed: 0 };
+  }
+
   function liepinSyncMessage(synced, total, insertedCount, updatedMsgCount, jobDetailStats = {}) {
     const detailCompleted = Number(jobDetailStats.success || 0) + Number(jobDetailStats.failed || 0) + Number(jobDetailStats.skipped || 0);
     return `正在同步猎聘沟通记录... 已处理 ${synced} / ${total} 条，消息状态：新增 ${insertedCount} 条，更新 ${updatedMsgCount} 条；岗位详情 ${detailCompleted} 条`;
   }
 
-  function liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats = createJobDetailSyncStats()) {
+  function liepinSyncSummary(
+    insertedCount,
+    updatedMsgCount,
+    jobDetailStats = createJobDetailSyncStats(),
+    conversationStats = createConversationSyncStats()
+  ) {
     return {
       inserted: insertedCount,
       updated: updatedMsgCount,
       updatedMsg: updatedMsgCount,
-      jobDetail: { ...jobDetailStats }
+      jobDetail: { ...jobDetailStats },
+      conversation: { ...conversationStats }
     };
   }
 
-  async function saveLiepinPartial(records, synced, total, interrupted, completed, insertedCount = 0, updatedMsgCount = 0, jobDetailStats = createJobDetailSyncStats()) {
+  async function saveLiepinPartial(
+    records,
+    synced,
+    total,
+    interrupted,
+    completed,
+    insertedCount = 0,
+    updatedMsgCount = 0,
+    jobDetailStats = createJobDetailSyncStats(),
+    conversationStats = createConversationSyncStats()
+  ) {
     return savePartial('liepin', '猎聘沟通记录', '猎聘', records, synced, total, interrupted, completed, {
-      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats)
+      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats, conversationStats)
     });
   }
 
@@ -159,6 +186,7 @@
   function liepinApiStep(path) {
     if (path.endsWith('.contact.get-contact-list')) return 'getContactList';
     if (path.endsWith('.chat.job-preview')) return 'jobPreview';
+    if (path.endsWith('.chat.chat-list')) return 'conversationHistory';
     return path;
   }
 
@@ -166,7 +194,7 @@
     try { return Object.fromEntries(response.headers.entries()); } catch (_) { return {}; }
   }
 
-  async function postLiepinApi(path, params) {
+  async function postLiepinApi(path, params, options = {}) {
     const url = `https://api-c.liepin.com/api/${path}`;
     const headers = liepinHeaders();
     const body = new URLSearchParams(params).toString();
@@ -192,7 +220,8 @@
         credentials: 'include',
         mode: 'cors',
         headers,
-        body
+        body,
+        signal: options.signal
       });
     } catch (error) {
       await appendRequestLog({
@@ -256,6 +285,153 @@
     } catch (_) {
       return { message: normalizeText(String(lastPayload)), jobTitle: '', jobSalary: '', jobCompany: '' };
     }
+  }
+
+  function liepinConversationStoppedError() {
+    const error = new Error('猎聘完整会话同步已停止。');
+    error.name = 'AbortError';
+    return error;
+  }
+
+  function compareLiepinMessageIds(left, right) {
+    const leftId = normalizeText(left);
+    const rightId = normalizeText(right);
+    if (/^\d+$/.test(leftId) && /^\d+$/.test(rightId)) {
+      try {
+        const leftValue = BigInt(leftId);
+        const rightValue = BigInt(rightId);
+        if (leftValue < rightValue) return -1;
+        if (leftValue > rightValue) return 1;
+        return 0;
+      } catch (_) {}
+    }
+    return leftId.localeCompare(rightId);
+  }
+
+  function oldestLiepinMessageId(list) {
+    return (Array.isArray(list) ? list : []).reduce((oldest, item) => {
+      const id = normalizeText(item?.msgId);
+      if (!id) return oldest;
+      return !oldest || compareLiepinMessageIds(id, oldest) < 0 ? id : oldest;
+    }, '');
+  }
+
+  function parseLiepinConversationMessage(item) {
+    if (!item || item.revokeFlag === true) return null;
+    const id = normalizeText(item.msgId);
+    const userId = normalizeText(item.userId);
+    const oppositeUserId = normalizeText(item.oppositeUserId);
+    const direction = normalizeText(item.direction);
+    if (!id || !userId || !oppositeUserId || !['0', '1'].includes(direction)) return null;
+    let payload;
+    try {
+      payload = typeof item.payload === 'string' ? JSON.parse(item.payload) : item.payload;
+    } catch (_) {
+      return null;
+    }
+    const text = normalizeMultilineText(
+      (Array.isArray(payload?.bodies) ? payload.bodies : [])
+        .map((body) => typeof body?.msg === 'string' ? body.msg : '')
+        .filter(Boolean)
+        .join('\n')
+    );
+    if (!text) return null;
+    const outgoing = direction === '0';
+    return normalizeConversationMessage({
+      id,
+      text,
+      fromUserId: outgoing ? userId : oppositeUserId,
+      toUserId: outgoing ? oppositeUserId : userId,
+      timestamp: item.msgTime
+    });
+  }
+
+  function liepinConversationIsCurrent(record, item) {
+    return conversationIsCompleteForLatest(record, item?.latestMsgId);
+  }
+
+  async function fetchLiepinConversation(item, fallbackImId, options = {}) {
+    const imId = normalizeText(item?.imId || fallbackImId);
+    const oppositeImId = normalizeText(item?.oppositeImId);
+    const sourceLatestMessageId = normalizeText(item?.latestMsgId);
+    if (!imId) throw new Error('猎聘会话同步缺少当前账号 imId。');
+    if (!oppositeImId) throw new Error('猎聘会话同步缺少 oppositeImId。');
+
+    const pageSize = 20;
+    const maxPages = 500;
+    const rawMessageIds = new Set();
+    const messagesById = new Map();
+    let maxMessageId = '';
+    let currentUserId = normalizeText(options.currentUserId);
+    let oppositeUserId = normalizeText(item?.oppositeUserId);
+    let completed = false;
+
+    for (let page = 1; page <= maxPages; page += 1) {
+      if (options.signal?.aborted || await options.shouldStop?.()) throw liepinConversationStoppedError();
+      const data = await postLiepinApi('com.liepin.im.c.chat.chat-list', {
+        imUserType: '0',
+        imId,
+        imApp: '1',
+        oppositeImId,
+        maxMessageId,
+        pageSize: String(pageSize)
+      }, { signal: options.signal });
+      if (!Array.isArray(data?.list)) throw new Error('猎聘聊天记录接口未返回 data.list。');
+      const list = data.list;
+      if (!list.length) {
+        completed = true;
+        break;
+      }
+
+      let newRawMessageCount = 0;
+      list.forEach((rawMessage) => {
+        const responseOppositeImId = normalizeText(rawMessage?.oppositeImId);
+        if (responseOppositeImId && responseOppositeImId !== oppositeImId) {
+          throw new Error('猎聘聊天记录接口返回了其他联系人的消息。');
+        }
+        const id = normalizeText(rawMessage?.msgId);
+        if (id && !rawMessageIds.has(id)) {
+          rawMessageIds.add(id);
+          newRawMessageCount += 1;
+        }
+        currentUserId = currentUserId || normalizeText(rawMessage?.userId);
+        oppositeUserId = oppositeUserId || normalizeText(rawMessage?.oppositeUserId);
+        const message = parseLiepinConversationMessage(rawMessage);
+        if (message) messagesById.set(message.id, message);
+      });
+
+      const totalCount = Number(data.totalCount);
+      if (Number.isFinite(totalCount) && totalCount > 0 && rawMessageIds.size >= totalCount) {
+        completed = true;
+        break;
+      }
+      if (list.length < pageSize) {
+        completed = true;
+        break;
+      }
+      const nextMaxMessageId = oldestLiepinMessageId(list);
+      if (!nextMaxMessageId) throw new Error('猎聘聊天记录分页缺少有效 msgId。');
+      if (!newRawMessageCount || nextMaxMessageId === maxMessageId) {
+        throw new Error('猎聘聊天记录分页游标未继续推进。');
+      }
+      maxMessageId = nextMaxMessageId;
+    }
+
+    if (!completed) throw new Error(`猎聘聊天记录超过最大分页数 ${maxPages}。`);
+    if (options.signal?.aborted || await options.shouldStop?.()) throw liepinConversationStoppedError();
+    return {
+      conversation: normalizeConversation({
+        version: 1,
+        currentUserId,
+        messages: [...messagesById.values()],
+        sync: {
+          complete: true,
+          sourceLatestMessageId,
+          syncedAt: new Date().toISOString()
+        }
+      }),
+      oppositeUserId
+    };
   }
 
   function liepinJobText(jobTitle, jobSalary) {
@@ -391,7 +567,40 @@
     };
   }
 
-  async function fetchLiepinContacts(imId) {
+  function refreshLiepinContactRecord(item, imId, index, existingRecord, conversationResult = {}) {
+    const payloadInfo = parseLiepinLastPayload(item?.lastPayload);
+    const latestMsgTime = Number(item?.latestMsgTime || existingRecord?.liepin?.latestMsgTime || Date.now());
+    const conversation = conversationResult.conversation || existingRecord?.conversation;
+    return {
+      ...(existingRecord || {}),
+      index,
+      time: formatDateTime(new Date(latestMsgTime)),
+      updatedAt: new Date().toISOString(),
+      recruiterName: normalizeText(item?.name) || existingRecord?.recruiterName || '',
+      companyName: normalizeText(item?.company) || existingRecord?.companyName || '',
+      recruiterTitle: normalizeText(item?.title) || existingRecord?.recruiterTitle || '',
+      lastMessage: payloadInfo.message || normalizeText(item?.lastPayload || '') || existingRecord?.lastMessage || '',
+      messageStatus: liepinMessageStatusFromItem(item),
+      ...(conversation ? { conversation } : {}),
+      liepin: {
+        ...(existingRecord?.liepin || {}),
+        imId: normalizeText(item?.imId || imId || existingRecord?.liepin?.imId),
+        oppositeImId: normalizeText(item?.oppositeImId || existingRecord?.liepin?.oppositeImId),
+        oppositeUserId: normalizeText(
+          conversationResult.oppositeUserId
+          || item?.oppositeUserId
+          || existingRecord?.liepin?.oppositeUserId
+        ),
+        latestMsgId: normalizeText(item?.latestMsgId || existingRecord?.liepin?.latestMsgId),
+        latestMsgTime,
+        oppositeRead: normalizeText(item?.oppositeRead || existingRecord?.liepin?.oppositeRead),
+        contactKey: liepinContactKey(item) || existingRecord?.liepin?.contactKey || '',
+        homePage: item?.homePage || existingRecord?.liepin?.homePage || ''
+      }
+    };
+  }
+
+  async function fetchLiepinContacts(imId, recentOnly = true) {
     const data = await postLiepinApi('com.liepin.im.c.contact.get-contact-list', {
       imUserType: '0',
       imId,
@@ -399,7 +608,8 @@
       pageSize: '100',
       curPage: '0'
     });
-    return filterLiepinRecentContacts(Array.isArray(data.list) ? data.list : []);
+    const list = Array.isArray(data.list) ? data.list : [];
+    return recentOnly ? filterLiepinRecentContacts(list) : list;
   }
 
   async function fetchLiepinJobPreview(imId, oppositeImId) {
@@ -736,12 +946,33 @@
     let insertedCount = 0;
     let updatedMsgCount = 0;
     const jobDetailStats = createJobDetailSyncStats();
+    const conversationStats = createConversationSyncStats();
+    const currentSyncSummary = () => liepinSyncSummary(
+      insertedCount,
+      updatedMsgCount,
+      jobDetailStats,
+      conversationStats
+    );
+    const saveCurrentPartial = (interrupted, completed) => saveLiepinPartial(
+      records,
+      syncedCount,
+      totalToSync,
+      interrupted,
+      completed,
+      insertedCount,
+      updatedMsgCount,
+      jobDetailStats,
+      conversationStats
+    );
     const jobDetailSession = new globalThis.JobChatJobSync.JobDetailSyncSession({
       requestIntervalMs: 2000,
       maxRequestsPerPage: Number.MAX_SAFE_INTEGER
     });
     const progressCategories = () => ({
-      communication: { completed: insertedCount + updatedMsgCount, total: communicationTotal },
+      communication: {
+        completed: insertedCount + updatedMsgCount + conversationStats.messageFailed,
+        total: communicationTotal
+      },
       jobDetail: {
         completed: jobDetailStats.success + jobDetailStats.failed + jobDetailStats.skipped,
         total: jobDetailTotal
@@ -756,13 +987,13 @@
       jobDetailRequired: jobDetailTotal > 0,
       message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount, jobDetailStats)
     });
-    await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
+    await saveCurrentPartial(false, syncedCount >= totalToSync);
 
     for (let i = 0; i < contactsToSync.length; i += 1) {
       const item = contactsToSync[i];
 
       if (await isCancelRequested()) {
-        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+        await saveCurrentPartial(true, false);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
@@ -771,7 +1002,7 @@
           synced: syncedCount,
           interrupted: true,
           sourceTotal: totalToSync,
-          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+          syncSummary: currentSyncSummary(),
           records
         };
       }
@@ -786,12 +1017,75 @@
         addLiepinRecordKeys(recordKeys, record);
         return recordKeys.has(itemKey);
       }));
-      const baseRecord = await buildLiepinRecord(
+      let conversationResult = {
+        conversation: existingRecord?.conversation,
+        oppositeUserId: existingRecord?.liepin?.oppositeUserId || item?.oppositeUserId || ''
+      };
+      if (liepinConversationIsCurrent(existingRecord, item)) {
+        conversationStats.skipped += 1;
+      } else {
+        conversationStats.requested += 1;
+        try {
+          conversationResult = await fetchLiepinConversation(item, imId, {
+            currentUserId: existingRecord?.conversation?.currentUserId,
+            shouldStop: isCancelRequested
+          });
+          conversationStats.success += 1;
+        } catch (error) {
+          if (await isCancelRequested() || error?.name === 'AbortError') {
+            await saveCurrentPartial(true, false);
+            return {
+              pageTitle: document.title || '',
+              pageUrl: location.href,
+              extractedAt: new Date().toISOString(),
+              total: records.length,
+              synced: syncedCount,
+              interrupted: true,
+              sourceTotal: totalToSync,
+              syncSummary: currentSyncSummary(),
+              records
+            };
+          }
+          conversationStats.failed += 1;
+          if (syncNeeds.message) conversationStats.messageFailed += 1;
+          if (syncNeeds.jobDetail) jobDetailStats.failed += 1;
+          syncedCount += 1;
+          const errorMessage = normalizeText(error?.message || error) || '猎聘完整会话同步失败。';
+          await appendRequestLog({
+            siteKey: 'liepin',
+            step: 'conversationHistory:error',
+            recordKey: existingRecord?.recordKey || `liepin|${normalizeText(item?.oppositeImId).toLowerCase()}`,
+            error: errorMessage
+          });
+          reportProgress('liepin', '猎聘沟通记录', '猎聘', syncedCount, totalToSync, {
+            inserted: insertedCount,
+            updated: updatedMsgCount,
+            updatedMsg: updatedMsgCount,
+            progressCategories: progressCategories(),
+            jobDetailRequired: jobDetailTotal > 0,
+            message: `完整会话同步失败，已保留旧记录：${errorMessage}`
+          });
+          await saveCurrentPartial(false, syncedCount >= totalToSync);
+          continue;
+        }
+      }
+      const builtRecord = await buildLiepinRecord(
         item,
         imId,
         existingIndex >= 0 ? existingIndex + 1 : records.length + 1,
         existingRecord
       );
+      const baseRecord = {
+        ...builtRecord,
+        ...(conversationResult.conversation ? { conversation: conversationResult.conversation } : {}),
+        liepin: {
+          ...(builtRecord.liepin || {}),
+          oppositeUserId: normalizeText(
+            conversationResult.oppositeUserId
+            || builtRecord.liepin?.oppositeUserId
+          )
+        }
+      };
       const emptyPreview = isLiepinEmptyJobPreview(baseRecord);
       const needsJobDetail = liepinNeedsJobDetail(baseRecord);
       const jobResult = emptyPreview
@@ -803,7 +1097,7 @@
           onCompanyProfile: persistCompanyProfile
         });
       if (jobResult.stopped) {
-        await saveLiepinPartial(records, syncedCount, totalToSync, true, false, insertedCount, updatedMsgCount, jobDetailStats);
+        await saveCurrentPartial(true, false);
         return {
           pageTitle: document.title || '',
           pageUrl: location.href,
@@ -812,7 +1106,7 @@
           synced: syncedCount,
           interrupted: true,
           sourceTotal: totalToSync,
-          syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+          syncSummary: currentSyncSummary(),
           records
         };
       }
@@ -846,7 +1140,7 @@
         jobDetailRequired: jobDetailTotal > 0,
         message: liepinSyncMessage(syncedCount, totalToSync, insertedCount, updatedMsgCount, jobDetailStats)
       });
-      await saveLiepinPartial(records, syncedCount, totalToSync, false, syncedCount >= totalToSync, insertedCount, updatedMsgCount, jobDetailStats);
+      await saveCurrentPartial(false, syncedCount >= totalToSync);
     }
 
     return {
@@ -857,7 +1151,7 @@
       synced: syncedCount,
       interrupted: false,
       sourceTotal: totalToSync,
-      syncSummary: liepinSyncSummary(insertedCount, updatedMsgCount, jobDetailStats),
+      syncSummary: currentSyncSummary(),
       records
     };
   }
@@ -888,27 +1182,20 @@
 
   async function refreshLiepinRecords(records, options = {}) {
     const targets = Array.isArray(records) ? records : [];
-    if (!targets.length) return { records: [], results: [], jobDetail: createJobDetailSyncStats() };
+    if (!targets.length) {
+      return {
+        records: [],
+        results: [],
+        jobDetail: createJobDetailSyncStats(),
+        conversation: createConversationSyncStats()
+      };
+    }
     const imId = getLiepinImId();
     if (!imId) throw new Error('没有在当前猎聘页面 Cookie / 缓存中找到 imId_0。请确认已登录猎聘。');
     let contactsByKey = null;
     const findContact = async (record) => {
-      if (record?.liepin?.homePage && record?.liepin?.oppositeImId && record?.liepin?.oppositeUserId) {
-        return {
-          imId: record.liepin.imId || imId,
-          oppositeImId: record.liepin.oppositeImId,
-          oppositeUserId: record.liepin.oppositeUserId,
-          homePage: record.liepin.homePage,
-          latestMsgId: record.liepin.latestMsgId,
-          latestMsgTime: record.liepin.latestMsgTime,
-          oppositeRead: record.liepin.oppositeRead,
-          name: record.recruiterName,
-          title: record.recruiterTitle,
-          company: record.companyName
-        };
-      }
       if (!contactsByKey) {
-        contactsByKey = indexLiepinRecords((await fetchLiepinContacts(imId)).map((item) => ({
+        contactsByKey = indexLiepinRecords((await fetchLiepinContacts(imId, false)).map((item) => ({
           recordKey: `liepin|${normalizeText(item.oppositeImId).toLowerCase()}`,
           liepin: {
             oppositeImId: item.oppositeImId,
@@ -927,6 +1214,7 @@
     const updated = [];
     const results = [];
     const jobDetailStats = createJobDetailSyncStats();
+    const conversationStats = createConversationSyncStats();
     const session = new globalThis.JobChatJobSync.JobDetailSyncSession({
       requestIntervalMs: 2000,
       maxRequestsPerPage: Number.MAX_SAFE_INTEGER
@@ -943,9 +1231,83 @@
         options.onProgress?.({ recordKey: record.recordKey, status: '失败', error, completed: index + 1, total: targets.length });
         continue;
       }
+      let conversationResult = {
+        conversation: record?.conversation,
+        oppositeUserId: record?.liepin?.oppositeUserId || item?.oppositeUserId || ''
+      };
+      let conversationSkipped = false;
+      if (liepinConversationIsCurrent(record, item)) {
+        conversationStats.skipped += 1;
+        conversationSkipped = true;
+      } else {
+        conversationStats.requested += 1;
+        try {
+          conversationResult = await fetchLiepinConversation(item, imId, {
+            currentUserId: record?.conversation?.currentUserId,
+            shouldStop: options.shouldStop,
+            signal: options.signal
+          });
+          conversationStats.success += 1;
+        } catch (error) {
+          if (options.signal?.aborted || await options.shouldStop?.() || error?.name === 'AbortError') break;
+          conversationStats.failed += 1;
+          const errorMessage = normalizeText(error?.message || error) || '猎聘完整会话同步失败。';
+          results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
+          options.onProgress?.({
+            recordKey: record.recordKey,
+            status: '失败',
+            error: errorMessage,
+            completed: index + 1,
+            total: targets.length
+          });
+          continue;
+        }
+      }
+      const needsJobDetail = Boolean(options.forceJobDetail || !isCompleteJobInfo(record));
+      if (!needsJobDetail) {
+        jobDetailStats.skipped += 1;
+        const nextRecord = {
+          ...refreshLiepinContactRecord(
+            item,
+            imId,
+            record.index || index + 1,
+            record,
+            conversationResult
+          ),
+          recordKey: record.recordKey
+        };
+        updated.push(nextRecord);
+        results.push({
+          recordKey: record.recordKey,
+          ok: true,
+          skipped: conversationSkipped,
+          jobInfoStatus: nextRecord.jobInfo?.fetchStatus,
+          error: ''
+        });
+        options.onProgress?.({
+          recordKey: record.recordKey,
+          status: conversationSkipped ? '跳过' : '成功',
+          error: '',
+          completed: index + 1,
+          total: targets.length,
+          record: nextRecord
+        });
+        continue;
+      }
       let baseRecord;
       try {
-        baseRecord = await buildLiepinRecord(item, imId, record.index || index + 1, record);
+        const builtRecord = await buildLiepinRecord(item, imId, record.index || index + 1, record);
+        baseRecord = {
+          ...builtRecord,
+          ...(conversationResult.conversation ? { conversation: conversationResult.conversation } : {}),
+          liepin: {
+            ...(builtRecord.liepin || {}),
+            oppositeUserId: normalizeText(
+              conversationResult.oppositeUserId
+              || builtRecord.liepin?.oppositeUserId
+            )
+          }
+        };
       } catch (error) {
         const errorMessage = error?.message || String(error);
         jobDetailStats.failed += 1;
@@ -958,7 +1320,7 @@
         ? { record: baseRecord, status: 'success', skipped: true, requested: false, errorMessage: '' }
         : await session.syncRecord(baseRecord, { item }, {
           adapter: globalThis.JobChatSiteAdapters.get('liepin'),
-          policy: 'force',
+          policy: options.forceJobDetail ? 'force' : 'missing',
           shouldStop: options.shouldStop,
           signal: options.signal,
           onLog: options.onLog,
@@ -966,16 +1328,24 @@
         });
       if (jobResult.stopped) break;
       if (jobResult.requested) jobDetailStats.requested += 1;
-      if (emptyPreview || jobResult.record?.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
+      if (jobResult.skipped) jobDetailStats.skipped += 1;
+      else if (emptyPreview || jobResult.record?.jobInfo?.fetchStatus === 'success') jobDetailStats.success += 1;
       else jobDetailStats.failed += 1;
       const nextRecord = { ...jobResult.record, recordKey: record.recordKey };
       updated.push(nextRecord);
       const ok = nextRecord.jobInfo?.fetchStatus === 'success';
       const error = nextRecord.jobInfo?.errorMessage || '';
-      results.push({ recordKey: record.recordKey, ok, jobInfoStatus: nextRecord.jobInfo?.fetchStatus, error });
+      const recordSkipped = Boolean(jobResult.skipped && conversationSkipped);
+      results.push({
+        recordKey: record.recordKey,
+        ok,
+        skipped: recordSkipped,
+        jobInfoStatus: nextRecord.jobInfo?.fetchStatus,
+        error
+      });
       options.onProgress?.({
         recordKey: record.recordKey,
-        status: ok ? '成功' : '失败',
+        status: recordSkipped ? '跳过' : (ok ? '成功' : '失败'),
         error,
         completed: index + 1,
         total: targets.length,
@@ -983,7 +1353,14 @@
       });
     }
     const stopped = Boolean(options.signal?.aborted || await options.shouldStop?.());
-    return { records: updated, results, stopped, paused: false, jobDetail: jobDetailStats };
+    return {
+      records: updated,
+      results,
+      stopped,
+      paused: false,
+      jobDetail: jobDetailStats,
+      conversation: conversationStats
+    };
   }
 
   function emitLiepinSendProgress(payload) {

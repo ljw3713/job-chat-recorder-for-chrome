@@ -201,7 +201,7 @@
       jobDetailRefreshAbortController = abortController;
       adapter.refreshRecords(message.records || [], {
         forceChat: true,
-        forceJobDetail: true,
+        forceJobDetail: message.forceJobDetail === true,
         rate: message.rate,
         retryDelaySeconds: message.retryDelaySeconds,
         retryCount: message.retryCount,

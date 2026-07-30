@@ -34,6 +34,14 @@ function migrateBossChatSecurityId(record) {
   return { ...record, boss };
 }
 
+function mergedConversationFields(oldRecord, nextRecord) {
+  const conversation = globalThis.JobChatRecords?.mergeConversation(
+    oldRecord?.conversation,
+    nextRecord?.conversation
+  );
+  return conversation ? { conversation } : {};
+}
+
 function supportedSiteNames() {
   return 'zhipin.com（BOSS直聘）、liepin.com（猎聘）';
 }
@@ -126,8 +134,18 @@ async function updateBossRecordAfterSent(recordKey, message) {
   const nextRecords = records.map((record) => {
     if (String(record?.recordKey || '') !== String(recordKey)) return record;
     changed = true;
+    const conversation = record.conversation && typeof record.conversation === 'object'
+      ? globalThis.JobChatRecords.normalizeConversation({
+          ...record.conversation,
+          sync: {
+            ...(record.conversation.sync || {}),
+            complete: false
+          }
+        })
+      : undefined;
     return {
       ...record,
+      ...(conversation ? { conversation } : {}),
       time: updatedDate,
       updatedDate,
       updatedAt: sentAt.toISOString(),
@@ -170,8 +188,18 @@ async function updateLiepinRecordFromSendProgress(progress) {
       ...(oppositeUserId ? { oppositeUserId } : {})
     };
     if (!sent) return { ...record, liepin };
+    const conversation = record.conversation && typeof record.conversation === 'object'
+      ? globalThis.JobChatRecords.normalizeConversation({
+          ...record.conversation,
+          sync: {
+            ...(record.conversation.sync || {}),
+            complete: false
+          }
+        })
+      : undefined;
     return {
       ...record,
+      ...(conversation ? { conversation } : {}),
       time: updatedDate,
       updatedDate,
       updatedAt: sentAt.toISOString(),
@@ -316,6 +344,34 @@ function addJobDetailStats(target, source) {
   return target;
 }
 
+function addConversationStats(target, source) {
+  if (!source) return target;
+  ['requested', 'success', 'failed', 'skipped', 'messageFailed'].forEach((field) => {
+    target[field] = Number(target[field] || 0) + Number(source[field] || 0);
+  });
+  return target;
+}
+
+function buildRefreshRecordStats(records, resultsByKey, riskControls = 0) {
+  const stats = {
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    riskControls: Number(riskControls || 0)
+  };
+  records.forEach((record) => {
+    const result = resultsByKey.get(String(record?.recordKey || ''));
+    if (!result || result.skipped) {
+      stats.skipped += 1;
+    } else if (result.ok) {
+      stats.success += 1;
+    } else {
+      stats.failed += 1;
+    }
+  });
+  return stats;
+}
+
 async function getTabSnapshot(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -395,7 +451,7 @@ async function refreshSelectedRecords(message) {
   }
   const recordSiteKey = (record) => record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : (record?.sourceName === 'BOSS直聘' ? 'boss' : ''));
   const selectedSiteKeys = new Set(records.map(recordSiteKey).filter(Boolean));
-  if (selectedSiteKeys.size !== 1) throw new Error('请选择同一个招聘网站的记录后再更新详情。');
+  if (selectedSiteKeys.size !== 1) throw new Error('请选择同一个招聘网站的记录后再更新岗位与消息。');
   const siteKey = [...selectedSiteKeys][0];
   if (siteKey !== 'boss' && siteKey !== 'liepin') throw new Error('选中记录所属网站暂不支持岗位详情更新。');
   const siteName = siteKey === 'liepin' ? '猎聘' : 'BOSS直聘';
@@ -415,6 +471,7 @@ async function refreshSelectedRecords(message) {
   const refreshedByKey = new Map();
   const resultsByKey = new Map();
   const jobDetail = { requested: 0, success: 0, failed: 0, skipped: 0, riskPauses: 0, stoppedByRiskControl: false };
+  const conversation = { requested: 0, success: 0, failed: 0, skipped: 0, messageFailed: 0 };
   let remainingRecords = records;
   let response = null;
   let paused = false;
@@ -423,7 +480,7 @@ async function refreshSelectedRecords(message) {
   await appendSyncReloadLog({
     siteKey,
     step: 'jobDetail:dispatch:start',
-    message: `开始向${siteName}标签页发送岗位详情同步任务；tabId=${tab.id}；记录=${records.length} 条。`,
+    message: `开始向${siteName}标签页发送岗位与消息同步任务；tabId=${tab.id}；记录=${records.length} 条。`,
     runId,
     storageScope,
     recordCount: records.length,
@@ -491,6 +548,7 @@ async function refreshSelectedRecords(message) {
       if (result?.recordKey) resultsByKey.set(String(result.recordKey), result);
     });
     addJobDetailStats(jobDetail, data.jobDetail);
+    addConversationStats(conversation, data.conversation);
 
     const completedKeys = new Set([...resultsByKey.keys()]);
     remainingRecords = records.filter((record) => !completedKeys.has(String(record.recordKey)));
@@ -606,7 +664,7 @@ async function refreshSelectedRecords(message) {
       request: { type: 'JOB_CHAT_REFRESH_RECORDS', tabId: tab.id, recordKeys: records.map((record) => record.recordKey), rate: message.rate, debugLog: Boolean(message.debugLog) },
       response: { ok: Boolean(response?.ok), error: String(response?.error || '').slice(0, 500) }
     });
-    throw new Error(response?.error || '更新详情失败。');
+    throw new Error(response?.error || '更新岗位与消息失败。');
   }
   const refreshed = [...refreshedByKey.values()];
   const byKey = new Map(refreshed.map((record) => [String(record.recordKey), record]));
@@ -619,6 +677,7 @@ async function refreshSelectedRecords(message) {
       liepin: { ...(oldRecord.liepin || {}), ...(next.liepin || {}) },
       jobRef: { ...(oldRecord.jobRef || {}), ...(next.jobRef || {}) },
       jobInfo: next.jobInfo || oldRecord.jobInfo || {},
+      ...mergedConversationFields(oldRecord, next),
       note: oldRecord.note || next.note || '',
       applicationDate: oldRecord.applicationDate || next.applicationDate
     });
@@ -631,6 +690,7 @@ async function refreshSelectedRecords(message) {
     await chrome.storage.local.set({ jobChatRecords: sourceRecords.map(merge) });
   }
   const results = [...resultsByKey.values()];
+  const recordStats = buildRefreshRecordStats(records, resultsByKey, jobDetail.riskPauses);
   return {
     ok: true,
     total: records.length,
@@ -639,7 +699,9 @@ async function refreshSelectedRecords(message) {
     results,
     paused,
     stopped,
-    jobDetail
+    recordStats,
+    jobDetail,
+    conversation
   };
 }
 
@@ -825,6 +887,7 @@ async function extractFromTab(tab, syncSelection) {
     && Number(pendingSummary.synced || 0) > 0;
   const previousSummary = hasInterruptedProgress ? pendingSummary : {};
   const previousJobDetail = previousSummary.jobDetail || {};
+  const previousConversation = previousSummary.conversation || {};
   const previousInserted = Number(previousSummary.inserted || 0);
   const previousUpdated = Number(previousSummary.updatedMsg ?? previousSummary.updated ?? 0);
   const previousSynced = Number(previousSummary.synced || 0);
@@ -846,10 +909,11 @@ async function extractFromTab(tab, syncSelection) {
     ),
     insertedCompleted: previousInserted,
     updatedCompleted: previousUpdated,
-    communicationCompleted: previousInserted + previousUpdated,
+    communicationCompleted: previousInserted + previousUpdated + Number(previousConversation.messageFailed || 0),
     jobDetailCompleted: previousJobDetailCompleted,
     communicationTotal: Math.max(
       previousInserted + previousUpdated,
+      previousInserted + previousUpdated + Number(previousConversation.messageFailed || 0),
       preparedCommunicationTotal,
       Number(preparedCategories.communication?.total || 0)
     ),
@@ -903,6 +967,13 @@ async function extractFromTab(tab, syncSelection) {
       skipped: Number(previousJobDetail.skipped || 0),
       riskPauses: Number(previousJobDetail.riskPauses || 0),
       stoppedByRiskControl: Boolean(previousJobDetail.stoppedByRiskControl)
+    },
+    conversation: {
+      requested: Number(previousConversation.requested || 0),
+      success: Number(previousConversation.success || 0),
+      failed: Number(previousConversation.failed || 0),
+      skipped: Number(previousConversation.skipped || 0),
+      messageFailed: Number(previousConversation.messageFailed || 0)
     }
   };
   let firstSourceTotal = Number(
@@ -939,11 +1010,14 @@ async function extractFromTab(tab, syncSelection) {
     accumulatedSummary.updatedMsg += Number(summary.updatedMsg ?? summary.updated ?? 0);
     accumulatedSummary.synced += Number(response.data.synced || 0);
     addJobDetailStats(accumulatedSummary.jobDetail, summary.jobDetail);
+    addConversationStats(accumulatedSummary.conversation, summary.conversation);
     if (activeExtractionProgressContext) {
       activeExtractionProgressContext.syncedCompleted = accumulatedSummary.synced;
       activeExtractionProgressContext.insertedCompleted = accumulatedSummary.inserted;
       activeExtractionProgressContext.updatedCompleted = accumulatedSummary.updatedMsg;
-      activeExtractionProgressContext.communicationCompleted = accumulatedSummary.inserted + accumulatedSummary.updatedMsg;
+      activeExtractionProgressContext.communicationCompleted = accumulatedSummary.inserted
+        + accumulatedSummary.updatedMsg
+        + accumulatedSummary.conversation.messageFailed;
       activeExtractionProgressContext.jobDetailCompleted = accumulatedSummary.jobDetail.success
         + accumulatedSummary.jobDetail.failed
         + accumulatedSummary.jobDetail.skipped;
@@ -1037,7 +1111,8 @@ async function extractFromTab(tab, syncSelection) {
         inserted: accumulatedSummary.inserted + Number(summary.inserted || 0),
         updated: accumulatedSummary.updated + Number(summary.updated || 0),
         updatedMsg: accumulatedSummary.updatedMsg + Number(summary.updatedMsg ?? summary.updated ?? 0),
-        jobDetail: addJobDetailStats(accumulatedSummary.jobDetail, summary.jobDetail)
+        jobDetail: addJobDetailStats(accumulatedSummary.jobDetail, summary.jobDetail),
+        conversation: addConversationStats(accumulatedSummary.conversation, summary.conversation)
       }
     };
   }
@@ -1049,6 +1124,11 @@ async function extractFromTab(tab, syncSelection) {
   const jobDetailText = Number(jobDetail.requested || 0)
     ? `岗位详情：成功 ${jobDetail.success || 0} 条，失败 ${jobDetail.failed || 0} 条，跳过 ${jobDetail.skipped || 0} 条，风控暂停 ${jobDetail.riskPauses || 0} 次${jobDetail.stoppedByRiskControl ? '（已因安全验证停止；可在总览页选择记录后手动更新）' : ''}`
     : '';
+  const conversation = summary.conversation || {};
+  const conversationText = Number(conversation.requested || 0)
+    ? `完整会话：成功 ${conversation.success || 0} 条，失败 ${conversation.failed || 0} 条，跳过 ${conversation.skipped || 0} 条`
+    : '';
+  const syncDetailText = [conversationText, jobDetailText].filter(Boolean).join('；');
   const stoppedByRiskControl = Boolean(jobDetail.stoppedByRiskControl);
 
   await chrome.storage.local.set({ jobChatLiepinCancelRequested: false, jobChatCancelRequested: false });
@@ -1065,10 +1145,10 @@ async function extractFromTab(tab, syncSelection) {
       updated: Number(summary.updated || 0),
       updatedMsg: Number(summary.updatedMsg || summary.updated || 0),
       message: stoppedByRiskControl
-        ? `已因岗位详情安全验证停止${site.source}同步，已处理 ${summary.synced || 0} / ${summary.sourceTotal || data.records?.length || 0} 条，${actionText}${jobDetailText ? `；${jobDetailText}` : ''}。`
+        ? `已因岗位详情安全验证停止${site.source}同步，已处理 ${summary.synced || 0} / ${summary.sourceTotal || data.records?.length || 0} 条，${actionText}${syncDetailText ? `；${syncDetailText}` : ''}。`
         : summary.interrupted
-          ? `已中断${site.source}同步，已处理 ${summary.synced || 0} / ${summary.sourceTotal || data.records?.length || 0} 条，${actionText}${jobDetailText ? `；${jobDetailText}` : ''}。可继续同步。`
-          : `本次${actionText}${jobDetailText ? `；${jobDetailText}` : ''}。请在同步结果页确认后保存到总记录。`
+          ? `已中断${site.source}同步，已处理 ${summary.synced || 0} / ${summary.sourceTotal || data.records?.length || 0} 条，${actionText}${syncDetailText ? `；${syncDetailText}` : ''}。可继续同步。`
+          : `本次${actionText}${syncDetailText ? `；${syncDetailText}` : ''}。请在同步结果页确认后保存到总记录。`
     }
   });
 
@@ -1084,6 +1164,7 @@ function mergeRefreshedRecord(oldRecord, nextRecord) {
     liepin: { ...(oldRecord?.liepin || {}), ...(nextRecord?.liepin || {}) },
     jobRef: { ...(oldRecord?.jobRef || {}), ...(nextRecord?.jobRef || {}) },
     jobInfo: nextRecord?.jobInfo || oldRecord?.jobInfo || {},
+    ...mergedConversationFields(oldRecord, nextRecord),
     note: oldRecord?.note || nextRecord?.note || '',
     applicationDate: oldRecord?.applicationDate || nextRecord?.applicationDate
   });

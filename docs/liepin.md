@@ -412,6 +412,30 @@ record.messageStatus
 → 空字符串
 ```
 
+## 完整会话同步
+
+联系人被现有增量逻辑选中后，通过以下接口补齐完整会话：
+
+```text
+POST https://api-c.liepin.com/api/com.liepin.im.c.chat.chat-list
+```
+
+首页使用当前账号 `imId`、联系人 `oppositeImId`、空 `maxMessageId` 和
+`pageSize=20`。后续页使用上一页全部原始消息中最旧的 `msgId` 作为
+`maxMessageId`。响应中的 `data.pageSize` 不作为完成依据；同步通过
+`totalCount`、短页、空页、重复游标和最大页数保护共同判断是否完成。
+
+消息正文位于字符串化的 `payload.bodies[].msg`。`msgId` 全程以字符串处理；
+`direction=0` 映射为当前用户发送，`direction=1` 映射为对端发送。最终写入 BOSS
+与猎聘共用的顶层 `conversation`，按时间升序展示。
+
+只有完整分页成功后才替换旧会话。任一页失败时保留旧记录和旧 `latestMsgId`，确保
+下次仍能按原增量逻辑重试。总览页手动同步会重新读取联系人列表；岗位信息已经完整
+时只检查会话，不请求岗位预览和岗位详情。
+
+完整设计与边界见
+[猎聘完整会话同步方案](liepin-conversation-history-sync-plan.md)。
+
 ## 统一记录数据映射
 
 `buildLiepinRecord(item, imId, index, existingRecord)` 生成的主要字段如下。
@@ -589,11 +613,18 @@ jobChatLiepinCancelRequested
     "success": 0,
     "failed": 0,
     "skipped": 0
+  },
+  "conversation": {
+    "requested": 0,
+    "success": 0,
+    "failed": 0,
+    "skipped": 0,
+    "messageFailed": 0
   }
 }
 ```
 
-其中 `updated` 与 `updatedMsg` 含义相同，均表示因最后消息 ID 或消息状态变化而重新同步的记录数。`jobDetailSync` 是准备阶段预计补齐的岗位数，`jobDetail` 是实际执行统计。
+其中 `updated` 与 `updatedMsg` 含义相同，均表示因最后消息 ID 或消息状态变化而重新同步的记录数。`jobDetailSync` 是准备阶段预计补齐的岗位数，`jobDetail` 是实际执行统计；`conversation` 记录完整会话请求、成功、失败、跳过及因会话失败而未更新最近消息的数量。
 
 ## 相关源码
 
@@ -607,3 +638,4 @@ jobChatLiepinCancelRequested
 - `recordKey` 和统一记录规范化：`shared-records.js`
 - 完整数据模型：`docs/dataModel.md`
 - 岗位信息同步专题：[liepin-job-detail-plan.md](liepin-job-detail-plan.md)
+- 完整会话同步专题：[liepin-conversation-history-sync-plan.md](liepin-conversation-history-sync-plan.md)
