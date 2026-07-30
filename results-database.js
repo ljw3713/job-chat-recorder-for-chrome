@@ -50,7 +50,7 @@
     }
   }
 
-  function stripJobData(record) {
+  function stripPublicData(record) {
     const data = cloneJsonObject(record);
     [
       'index',
@@ -64,24 +64,13 @@
       'messageStatus',
       'recruiterName',
       'recruiterTitle',
-      'lastMessage',
-      'jobRef',
-      'jobInfo',
-      'bossJobSecurityId',
-      'externalJobId',
-      'jobDetailAccessToken',
-      'companyKey'
+      'lastMessage'
     ].forEach((field) => delete data[field]);
-    if (data.boss && typeof data.boss === 'object') {
-      delete data.boss.encryptJobId;
-      delete data.boss.bossJobSecurityId;
-      delete data.boss.bossSecurityId;
-    }
     return data;
   }
 
   function csvInternalData(record) {
-    return JSON.stringify(stripJobData(record));
+    return JSON.stringify(stripPublicData(record));
   }
 
   function parseCsvInternalData(value, rowNumber) {
@@ -96,20 +85,27 @@
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(`CSV 第 ${rowNumber} 行“内部数据”必须是 JSON 对象。`);
     }
-    return stripJobData(parsed);
+    return cloneJsonObject(parsed);
   }
 
-  function rowsFromImportedCsv(text) {
+  function rowsFromImportedCsv(text, options = {}) {
     const rows = parseCsv(text.replace(/^\ufeff/, ''));
     if (!rows.length) return [];
     const headers = rows[0].map((h) => normalizeText(h));
     const get = (row, name) => row[headers.indexOf(name)] || '';
     const hasInternalDataColumn = headers.includes('内部数据');
+    const hasInternalData = hasInternalDataColumn
+      && rows.slice(1).some((row) => normalizeText(get(row, '内部数据')));
+    if (hasInternalData && !options.allowInternalData) {
+      throw new Error('CSV 包含“内部数据”，仅总览页 URL 使用 debug=true 时允许导入。');
+    }
     return rows.slice(1).filter((row) => row.some((cell) => normalizeText(cell))).map((row, index) => {
       const sourceName = get(row, '来源');
       const recruiter = get(row, '招聘者') || get(row, '招聘者信息');
       const [recruiterName, recruiterTitle] = recruiter.split('/').map((v) => normalizeText(v));
-      const internalData = parseCsvInternalData(get(row, '内部数据'), index + 2);
+      const internalData = options.allowInternalData
+        ? parseCsvInternalData(get(row, '内部数据'), index + 2)
+        : null;
       const record = {
         ...(internalData || {}),
         index: index + 1,
@@ -134,10 +130,10 @@
     });
   }
 
-  function mergeImportedRecord(existingRecord, importedRecord) {
+  function mergeImportedRecord(existingRecord, importedRecord, options = {}) {
     const existing = existingRecord || {};
     const imported = importedRecord || {};
-    const hasInternalData = Boolean(imported._csvHasInternalData);
+    const hasInternalData = Boolean(options.allowInternalData && imported._csvHasInternalData);
     const merged = {
       ...existing,
       ...imported
@@ -168,17 +164,13 @@
       else delete merged.liepin;
     }
 
-    if (existing.jobRef !== undefined) merged.jobRef = existing.jobRef;
-    else delete merged.jobRef;
-    if (existing.jobInfo !== undefined) merged.jobInfo = existing.jobInfo;
-    else delete merged.jobInfo;
-    if (existing.companyKey !== undefined) merged.companyKey = existing.companyKey;
-    else delete merged.companyKey;
-    if (merged.boss) {
-      delete merged.boss.encryptJobId;
-      delete merged.boss.uploadSecurityId;
-      delete merged.boss.bossJobSecurityId;
-      delete merged.boss.bossSecurityId;
+    if (!hasInternalData) {
+      if (existing.jobRef !== undefined) merged.jobRef = existing.jobRef;
+      else delete merged.jobRef;
+      if (existing.jobInfo !== undefined) merged.jobInfo = existing.jobInfo;
+      else delete merged.jobInfo;
+      if (existing.companyKey !== undefined) merged.companyKey = existing.companyKey;
+      else delete merged.companyKey;
     }
     return merged;
   }

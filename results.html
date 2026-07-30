@@ -19,9 +19,41 @@
         top: 0;
         z-index: 10;
       }
+      .heading-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
       h1 {
         margin: 0 0 8px;
         font-size: 20px;
+      }
+      .heading-row h1 {
+        margin-bottom: 8px;
+      }
+      .dev-feature-toggles {
+        display: none;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: #4b5563;
+      }
+      .dev-feature-toggles.show {
+        display: flex;
+      }
+      .dev-feature-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .dev-feature-toggle input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
       }
       .meta {
         color: #6b7280;
@@ -521,7 +553,19 @@
   </head>
   <body>
     <header>
-      <h1 id="pageHeading">招聘沟通记录</h1>
+      <div class="heading-row">
+        <h1 id="pageHeading">招聘沟通记录</h1>
+        <div id="devFeatureToggles" class="dev-feature-toggles">
+          <label class="dev-feature-toggle">
+            <input id="logFeatureToggle" type="checkbox" />
+            log
+          </label>
+          <label class="dev-feature-toggle">
+            <input id="debugFeatureToggle" type="checkbox" />
+            debug
+          </label>
+        </div>
+      </div>
       <div id="meta" class="meta"></div>
     </header>
     <main>

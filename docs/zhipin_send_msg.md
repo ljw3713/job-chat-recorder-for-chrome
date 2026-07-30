@@ -14,11 +14,11 @@ WebSocket 协议。协议部分根据多组成功 HAR/WebSocket 记录整理，�
 
 发送弹窗默认每分钟发送 10 条，只限制最小值为 1。任务运行时“发送”按钮变为“停止”；停止会关闭当前批次连接，尚未发送的记录保持“等待”。
 
-发送日志栏默认隐藏。仅当结果页 URL 包含 `log=enable` 时显示，例如 `results.html?mode=overview&log=enable`。日志记录补全、HTTP 请求地址和参数、响应、WebSocket 生命周期以及每条发送结果，其中 token、用户 ID 和联系人标识等认证或发送凭据会隐藏。日志栏隐藏时后台仍会记录日志。
+开发版结果页标题右侧显示 `log` 和 `debug` 开关，默认均开启；URL 中的 `log=true|false` 和 `debug=true|false` 可覆盖默认值，页面复选框也会同步修改 URL。打包版隐藏这两个开关且默认关闭，但仍支持通过 URL 临时启用。日志记录补全、HTTP 请求地址和参数、响应、WebSocket 生命周期以及每条发送结果，其中 token、用户 ID 和联系人标识等认证或发送凭据会隐藏。
 
 扩展选择最近访问的 `*.zhipin.com` 标签页并在页面主世界检查用户信息，因此职位页等非聊天页面也可发送。本版本按单账号使用场景设计，不尝试区分同一浏览器中的多个 BOSS 登录账号。
 
-2.0.0 的发送预检会复用记录中格式有效的 `friendId` 和 `peerKey`。旧记录缺失字段时，先用 label 列表按 peerKey 定位联系人，仅对选中的 friendId 请求 `getGeekFriendList`，再调用一次 `getBossData` 取得权威 bossId 并回写记录；后续发送不再重复扫描全部联系人或请求 `getBossData`。`chatSecurityId` 仅供 HTTP 会话接口使用，不是纯文本 WebSocket 帧的必要字段。
+2.0.0 的发送预检会复用记录中格式有效的 `friendId` 和 `peerKey`。旧记录缺失字段时，先用 label 列表按 peerKey 定位联系人，仅对选中的关系 ID 请求 `getGeekFriendList`，再调用一次 `getBossData` 取得权威 bossId 并回写记录；关系 ID 单独保存为 `relationFriendId`，而 WebSocket 使用的招聘者数值用户 ID 仍保存为 `friendId`。后续发送不再重复扫描全部联系人或请求 `getBossData`。`chatSecurityId` 仅供 HTTP 会话接口使用，不是纯文本 WebSocket 帧的必要字段。
 
 收到相同 sequence、cmid 且 mid 非零的发送 ACK 后，扩展会把总记录的 `lastMessage` 更新为已发送正文，将 `updatedDate` 更新为当前时间，并把 `messageStatus` 设为未读。ACK 超时、连接断开或服务端拒绝时，该条标为“失败”并显示原因，但不更新总记录中的消息。
 
@@ -359,7 +359,7 @@ ack.mid != 0
 下一条预计发送时间
 ```
 
-发送日志默认隐藏，仅当结果页 URL 含 `log=enable` 时显示。后台仍持续记录日志。
+开发版发送日志默认开启，可通过标题右侧 `log` 复选框或 URL 参数 `log=false` 关闭。打包版默认关闭且不显示复选框，可通过 URL 参数 `log=true` 临时开启。
 
 日志和本地存储禁止包含：
 

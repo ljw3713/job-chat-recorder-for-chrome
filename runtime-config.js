@@ -4,7 +4,10 @@
     enableDebugLog: true,
     resultsPagePath(mode) {
       const params = new URLSearchParams({ mode: mode === 'sync' ? 'sync' : 'overview' });
-      if (this.enableDebugLog) params.set('log', 'enable');
+      if (this.enableDebugLog) {
+        params.set('log', 'true');
+        params.set('debug', 'true');
+      }
       return `results.html?${params.toString()}`;
     }
   };

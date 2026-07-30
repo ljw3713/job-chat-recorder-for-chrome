@@ -73,6 +73,9 @@ const updateDetailsProgressBar = document.getElementById('updateDetailsProgressB
 const updateDetailsRefreshNote = document.getElementById('updateDetailsRefreshNote');
 const updateDetailsTargets = document.getElementById('updateDetailsTargets');
 const updateDetailsLog = document.getElementById('updateDetailsLog');
+const devFeatureToggles = document.getElementById('devFeatureToggles');
+const logFeatureToggle = document.getElementById('logFeatureToggle');
+const debugFeatureToggle = document.getElementById('debugFeatureToggle');
 
 const pageParams = new URLSearchParams(location.search);
 const mode = pageParams.get('mode') === 'sync' ? 'sync' : 'overview';
@@ -80,7 +83,16 @@ const runtimeConfig = globalThis.JobChatRuntimeConfig || {
   enableDebugLog: false,
   resultsPagePath: (targetMode) => `results.html?mode=${targetMode === 'sync' ? 'sync' : 'overview'}`
 };
-const sendLogEnabled = Boolean(runtimeConfig.enableDebugLog) && pageParams.get('log') === 'enable';
+const isDevelopmentVersion = Boolean(runtimeConfig.enableDebugLog);
+function featureFlag(name, defaultValue = false) {
+  const value = String(pageParams.get(name) || '').toLowerCase();
+  if (['true', '1', 'enable', 'enabled', 'on'].includes(value)) return true;
+  if (['false', '0', 'disable', 'disabled', 'off'].includes(value)) return false;
+  return defaultValue;
+}
+const sendLogEnabled = featureFlag('log', isDevelopmentVersion);
+const debugEnabled = featureFlag('debug', isDevelopmentVersion);
+const debugDataEnabled = mode === 'overview' && debugEnabled;
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const { recruiterInfo, normalizeRecordDate, communicationDate, displayRecordDate, makeRecordKey, normalizeJobRef, normalizeJobInfo, isCompleteJobInfo } = globalThis.JobChatRecords;
@@ -117,9 +129,27 @@ let jobDetailNotSyncedOnly = false;
 let lastOverviewSelectedRecordKey = '';
 let activeSelectionAction = '';
 
+function updateFeatureFlag(name, enabled) {
+  const url = new URL(location.href);
+  url.searchParams.set(name, enabled ? 'true' : 'false');
+  location.replace(url.toString());
+}
+
+if (isDevelopmentVersion) {
+  devFeatureToggles?.classList.add('show');
+  if (logFeatureToggle) {
+    logFeatureToggle.checked = sendLogEnabled;
+    logFeatureToggle.addEventListener('change', () => updateFeatureFlag('log', logFeatureToggle.checked));
+  }
+  if (debugFeatureToggle) {
+    debugFeatureToggle.checked = debugEnabled;
+    debugFeatureToggle.addEventListener('change', () => updateFeatureFlag('debug', debugFeatureToggle.checked));
+  }
+}
+
 const tableHeaders = ['来源', '公司名', '岗位名', '申请时间', '更新时间', '备注', '招聘者', '状态', '原消息'];
 const tableExportHeaders = ['唯一索引id', ...tableHeaders];
-const csvExportHeaders = [...tableExportHeaders, '内部数据'];
+const csvExportHeaders = debugDataEnabled ? [...tableExportHeaders, '内部数据'] : tableExportHeaders;
 
 function normalizeMessageStatus(value) {
   const text = normalizeText(value);
@@ -227,7 +257,9 @@ function configurePageMode() {
     if (requestLogsBtn) requestLogsBtn.style.display = 'none';
     if (importCsvBtn) importCsvBtn.style.display = '';
     overviewBtn.textContent = '刷新总览';
-    pageHint.textContent = '';
+    pageHint.textContent = debugDataEnabled
+      ? '调试数据模式：JSON 和 CSV 会包含完整内部数据；CSV 导入会按唯一索引新增记录或覆盖已有记录的内部数据。'
+      : '';
     if (sendMessageBtn) sendMessageBtn.style.display = '';
   }
   if (mode === 'sync' && sendMessageBtn) sendMessageBtn.style.display = 'none';
@@ -243,9 +275,9 @@ function formatRequestLog(entry, index) {
 
 async function showRequestLogs() {
   if (!requestLogsBox || !requestLogsModal) return;
-  const store = await chrome.storage.local.get(['jobChatRequestLogs']);
-  const logs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
-  requestLogsBox.textContent = logs.length ? logs.map(formatRequestLog).join('\n\n') : '暂无请求日志。';
+  requestLogsBox.textContent = detailRefreshRequestLogs.length
+    ? detailRefreshRequestLogs.map(formatRequestLog).join('\n\n')
+    : '暂无请求日志。';
   requestLogsModal.classList.add('show');
 }
 
@@ -431,21 +463,30 @@ function applyFilters() {
 }
 
 function toOutputRows() {
-  return currentRecords.map((r) => ({
-    recordKey: normalizeText(r.recordKey || makeRecordKey(r)),
-    sourceName: normalizeText(r.sourceName),
-    companyName: normalizeText(r.companyName),
-    jobName: normalizeText(r.jobName),
-    applicationDate: exportDateTime(r.applicationDate),
-    updatedDate: exportDateTime(r.updatedDate),
-    note: normalizeText(r.note),
-    messageStatus: messageStatusText(r.messageStatus),
-    recruiterInfo: recruiterInfo(r),
-    lastMessage: normalizeText(r.lastMessage),
-    jobRef: normalizeJobRef(r.jobRef),
-    companyKey: normalizeText(r.companyKey || ''),
-    jobInfo: normalizeJobInfo(r.jobInfo)
-  }));
+  return currentRecords.map((r) => {
+    const output = {
+      recordKey: normalizeText(r.recordKey || makeRecordKey(r)),
+      sourceName: normalizeText(r.sourceName),
+      companyName: normalizeText(r.companyName),
+      jobName: normalizeText(r.jobName),
+      applicationDate: exportDateTime(r.applicationDate),
+      updatedDate: exportDateTime(r.updatedDate),
+      note: normalizeText(r.note),
+      messageStatus: messageStatusText(r.messageStatus),
+      recruiterInfo: recruiterInfo(r),
+      lastMessage: normalizeText(r.lastMessage),
+      jobRef: normalizeJobRef(r.jobRef),
+      companyKey: normalizeText(r.companyKey || ''),
+      jobInfo: normalizeJobInfo(r.jobInfo)
+    };
+    if (!debugDataEnabled) return output;
+    return {
+      ...r,
+      ...output,
+      recruiterName: normalizeText(r.recruiterName),
+      recruiterTitle: normalizeText(r.recruiterTitle)
+    };
+  });
 }
 
 function getTodayString() {
@@ -511,7 +552,7 @@ function toCsv() {
       messageStatus: messageStatusText(record.messageStatus),
       lastMessage: normalizeText(record.lastMessage)
     };
-    return [
+    const row = [
       output.recordKey,
       output.sourceName,
       output.companyName,
@@ -521,9 +562,10 @@ function toCsv() {
       output.note,
       output.recruiterInfo,
       output.messageStatus,
-      output.lastMessage,
-      ResultsDb.csvInternalData(record)
+      output.lastMessage
     ];
+    if (debugDataEnabled) row.push(ResultsDb.csvInternalData(record));
+    return row;
   });
   return ResultsDb.csv(csvExportHeaders, rows);
 }
@@ -924,16 +966,14 @@ async function openUpdateDetailsModal() {
     detailRefreshRecords = records;
     detailRefreshStatuses = new Map(records.map((record) => [record.recordKey, { status: '等待同步' }]));
     detailRefreshJobDetailStats = null;
+    detailRefreshLogs = [];
+    detailRefreshRequestLogs = [];
   }
   const store = await chrome.storage.local.get([
     'jobChatJobDetailRefreshRate',
     'jobChatJobDetailRetryDelay',
-    'jobChatJobDetailRetryCount',
-    'jobChatRefreshLogs',
-    'jobChatRequestLogs'
+    'jobChatJobDetailRetryCount'
   ]);
-  detailRefreshLogs = sendLogEnabled && Array.isArray(store.jobChatRefreshLogs) ? store.jobChatRefreshLogs : [];
-  detailRefreshRequestLogs = sendLogEnabled && Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
   updateDetailsRate.value = String(Math.max(1, Math.min(3600, Number(store.jobChatJobDetailRefreshRate || 20))));
   updateDetailsRetryDelay.value = String(Math.max(1, Math.min(3600, Math.floor(Number(store.jobChatJobDetailRetryDelay || 60)))));
   updateDetailsRetryCount.value = String(Math.max(1, Math.min(10, Math.floor(Number(store.jobChatJobDetailRetryCount || 3)))));
@@ -983,14 +1023,11 @@ async function startOrStopDetailRefresh() {
   detailRefreshJobDetailStats = null;
   renderUpdateDetailsModal();
   updateDeleteButton();
-  Promise.all([
-    chrome.storage.local.set({
-      jobChatJobDetailRefreshRate: rate,
-      jobChatJobDetailRetryDelay: retryDelaySeconds,
-      jobChatJobDetailRetryCount: retryCount
-    }),
-    chrome.storage.local.set({ jobChatRefreshLogs: [], jobChatRequestLogs: [] })
-  ]).then(() => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_SELECTED', recordKeys: retryRecords.map((record) => record.recordKey), storageScope: mode === 'sync' ? 'pending' : 'total', rate, retryDelaySeconds, retryCount, debugLog: sendLogEnabled, runId }))
+  chrome.storage.local.set({
+    jobChatJobDetailRefreshRate: rate,
+    jobChatJobDetailRetryDelay: retryDelaySeconds,
+    jobChatJobDetailRetryCount: retryCount
+  }).then(() => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_SELECTED', recordKeys: retryRecords.map((record) => record.recordKey), storageScope: mode === 'sync' ? 'pending' : 'total', rate, retryDelaySeconds, retryCount, debugLog: sendLogEnabled, runId }))
     .then(async (response) => {
       if (detailRefreshRunId !== runId) return;
       detailRefreshJobDetailStats = response?.jobDetail || null;
@@ -1164,7 +1201,7 @@ async function loadAndRenderLatest() {
 
 async function importCsvFile(file) {
   const text = await file.text();
-  const imported = ResultsDb.rowsFromImportedCsv(text);
+  const imported = ResultsDb.rowsFromImportedCsv(text, { allowInternalData: debugDataEnabled });
   if (!imported.length) throw new Error('CSV 中没有可导入的记录。');
   const byKey = new Map(allRecords.map((record) => [record.recordKey, record]));
   let inserted = 0;
@@ -1173,7 +1210,11 @@ async function importCsvFile(file) {
     const record = normalizeRecord(rawRecord, index);
     if (byKey.has(record.recordKey)) updated += 1;
     else inserted += 1;
-    byKey.set(record.recordKey, ResultsDb.mergeImportedRecord(byKey.get(record.recordKey), record));
+    byKey.set(record.recordKey, ResultsDb.mergeImportedRecord(
+      byKey.get(record.recordKey),
+      record,
+      { allowInternalData: debugDataEnabled }
+    ));
   });
   allRecords = Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
   await persistCurrentRecords();
@@ -1219,20 +1260,28 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
     }
   }
-  if (changes.jobChatRefreshLogs && sendLogEnabled) {
-    detailRefreshLogs = Array.isArray(changes.jobChatRefreshLogs.newValue) ? changes.jobChatRefreshLogs.newValue : [];
-    if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
-  }
-  if (changes.jobChatRequestLogs && sendLogEnabled) {
-    detailRefreshRequestLogs = Array.isArray(changes.jobChatRequestLogs.newValue) ? changes.jobChatRequestLogs.newValue : [];
-    if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
-  }
   if (changes.jobChatBossSendLogs) {
     if (sendLogEnabled) {
       sendLogs = Array.isArray(changes.jobChatBossSendLogs.newValue) ? changes.jobChatBossSendLogs.newValue : [];
       if (sendMessageModal?.classList.contains('show')) renderSendLog();
     }
   }
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== 'JOB_CHAT_LOG_EVENT') return;
+  if (message.logType === 'clear') {
+    detailRefreshLogs = [];
+    detailRefreshRequestLogs = [];
+  } else {
+    const entry = { time: new Date().toISOString(), ...(message.entry || {}) };
+    if (message.logType === 'request') {
+      detailRefreshRequestLogs = [...detailRefreshRequestLogs, entry].slice(-1000);
+    } else if (message.logType === 'summary' && sendLogEnabled) {
+      detailRefreshLogs = [...detailRefreshLogs, entry].slice(-200);
+    }
+  }
+  if (updateDetailsModal?.classList.contains('show')) renderUpdateDetailsModal();
 });
 
 [todayOnly, sourceFilter, companyFilter, messageStatusFilter, dateFieldFilter, dateFrom, dateTo, sortBy].forEach((el) => el?.addEventListener('change', () => {

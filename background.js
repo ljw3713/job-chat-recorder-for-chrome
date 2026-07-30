@@ -59,7 +59,8 @@ let activeExtractionProgressContext = null;
 let bossSendLogQueue = Promise.resolve();
 let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
-let syncReloadLogQueue = Promise.resolve();
+
+chrome.storage.local.remove(['jobChatRequestLogs', 'jobChatRefreshLogs']).catch(() => {});
 
 function unsupportedMessage(tabUrl) {
   const hostname = getHostname(tabUrl) || tabUrl || '当前页面';
@@ -285,20 +286,21 @@ async function getTabSnapshot(tabId) {
 
 function appendSyncReloadLog(entry, includeRefreshSummary = false) {
   const time = new Date().toISOString();
-  syncReloadLogQueue = syncReloadLogQueue.catch(() => {}).then(async () => {
-    const keys = includeRefreshSummary ? ['jobChatRequestLogs', 'jobChatRefreshLogs'] : ['jobChatRequestLogs'];
-    const store = await chrome.storage.local.get(keys);
-    const requestLogs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
-    const updates = {
-      jobChatRequestLogs: [...requestLogs, { time, siteKey: 'boss', ...entry }].slice(-1000)
-    };
+  try {
+    chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_LOG_EVENT',
+      logType: 'request',
+      entry: { time, siteKey: 'boss', ...entry }
+    }).catch(() => {});
     if (includeRefreshSummary) {
-      const refreshLogs = Array.isArray(store.jobChatRefreshLogs) ? store.jobChatRefreshLogs : [];
-      updates.jobChatRefreshLogs = [...refreshLogs, { time, siteKey: 'boss', step: entry.step, message: entry.message }].slice(-200);
+      chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_LOG_EVENT',
+        logType: 'summary',
+        entry: { time, siteKey: 'boss', step: entry.step, message: entry.message }
+      }).catch(() => {});
     }
-    await chrome.storage.local.set(updates);
-  });
-  return syncReloadLogQueue;
+  } catch (_) {}
+  return Promise.resolve();
 }
 
 async function refreshSelectedRecords(message) {
@@ -309,8 +311,16 @@ async function refreshSelectedRecords(message) {
   const storedSourceRecords = storageScope === 'pending'
     ? (Array.isArray(store.jobChatPendingRecords?.records) ? store.jobChatPendingRecords.records : [])
     : (Array.isArray(store.jobChatRecords) ? store.jobChatRecords : []);
-  const sourceRecords = storedSourceRecords.map(migrateBossChatSecurityId);
-  if (sourceRecords.some((record, index) => record !== storedSourceRecords[index])) {
+  let sourceRecordsNeedMigration = false;
+  const sourceRecords = storedSourceRecords.map((storedRecord, index) => {
+    const migratedRecord = migrateBossChatSecurityId(storedRecord);
+    const normalizedRecord = globalThis.JobChatRecords.normalizeStoredRecord(migratedRecord, index);
+    if (migratedRecord !== storedRecord || normalizedRecord.recordKey !== storedRecord?.recordKey) {
+      sourceRecordsNeedMigration = true;
+    }
+    return normalizedRecord;
+  });
+  if (sourceRecordsNeedMigration) {
     if (storageScope === 'pending') {
       const pending = { ...(store.jobChatPendingRecords || {}), records: sourceRecords, total: sourceRecords.length };
       await chrome.storage.local.set({ jobChatPendingRecords: pending, bossChatStatsLatest: pending });
@@ -328,7 +338,20 @@ async function refreshSelectedRecords(message) {
     const rightOrder = pendingOrder.has(rightKey) ? pendingOrder.get(rightKey) : sourceOrder.get(rightKey);
     return Number(leftOrder || 0) - Number(rightOrder || 0);
   });
-  if (records.length !== recordKeys.size) throw new Error('部分选中记录已不存在，请刷新列表后重试。');
+  const sourceKeyCounts = new Map();
+  sourceRecords.forEach((record) => {
+    const key = String(record?.recordKey || '');
+    if (key) sourceKeyCounts.set(key, Number(sourceKeyCounts.get(key) || 0) + 1);
+  });
+  const storageScopeName = storageScope === 'pending' ? '本次同步记录' : '总记录';
+  const missingKeys = [...recordKeys].filter((key) => !sourceKeyCounts.has(key));
+  if (missingKeys.length) {
+    throw new Error(`选中的记录已不在${storageScopeName}中：${missingKeys.slice(0, 3).join('、')}${missingKeys.length > 3 ? ` 等 ${missingKeys.length} 条` : ''}。请刷新列表后重试。`);
+  }
+  const duplicateKeys = [...recordKeys].filter((key) => Number(sourceKeyCounts.get(key) || 0) > 1);
+  if (duplicateKeys.length) {
+    throw new Error(`${storageScopeName}中存在重复唯一标识：${duplicateKeys.slice(0, 3).join('、')}。请先整理重复记录后重试。`);
+  }
   const recordSiteKey = (record) => record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : (record?.sourceName === 'BOSS直聘' ? 'boss' : ''));
   const selectedSiteKeys = new Set(records.map(recordSiteKey).filter(Boolean));
   if (selectedSiteKeys.size !== 1) throw new Error('请选择同一个招聘网站的记录后再更新详情。');
@@ -356,24 +379,67 @@ async function refreshSelectedRecords(message) {
   let paused = false;
   let stopped = false;
 
+  await appendSyncReloadLog({
+    siteKey,
+    step: 'jobDetail:dispatch:start',
+    message: `开始向${siteName}标签页发送岗位详情同步任务；tabId=${tab.id}；记录=${records.length} 条。`,
+    runId,
+    storageScope,
+    recordCount: records.length,
+    recordKeys: records.map((record) => String(record?.recordKey || '')),
+    tab: await getTabSnapshot(tab.id)
+  }, true);
+
   while (remainingRecords.length) {
     if (runId && activeJobDetailRefreshRunId !== runId) {
       stopped = true;
       break;
     }
     const batchRecords = remainingRecords;
-    response = await sendJobDetailRefreshToTab(tab.id, {
-      type: 'JOB_CHAT_REFRESH_RECORDS',
-      records: batchRecords,
-      storageScope,
-      rate: message.rate,
-      retryDelaySeconds,
-      retryCount,
-      riskRetryAttempts: Object.fromEntries(retryAttempts),
-      allowRiskReload: true,
-      debugLog: Boolean(message.debugLog),
-      runId
-    });
+    const dispatchStartedAt = Date.now();
+    try {
+      response = await sendJobDetailRefreshToTab(tab.id, {
+        type: 'JOB_CHAT_REFRESH_RECORDS',
+        records: batchRecords,
+        storageScope,
+        rate: message.rate,
+        retryDelaySeconds,
+        retryCount,
+        riskRetryAttempts: Object.fromEntries(retryAttempts),
+        allowRiskReload: true,
+        debugLog: Boolean(message.debugLog),
+        runId
+      });
+    } catch (error) {
+      await appendSyncReloadLog({
+        siteKey,
+        step: 'jobDetail:dispatch:error',
+        message: `向${siteName}标签页发送同步任务时异常；tabId=${tab.id}；${error?.message || String(error)}`,
+        runId,
+        recordCount: batchRecords.length,
+        elapsedMs: Date.now() - dispatchStartedAt,
+        error: error?.message || String(error),
+        tab: await getTabSnapshot(tab.id)
+      }, true);
+      throw error;
+    }
+    const responseError = String(response?.error || '');
+    await appendSyncReloadLog({
+      siteKey,
+      step: response?.ok ? 'jobDetail:dispatch:complete' : 'jobDetail:dispatch:failed',
+      message: response?.ok
+        ? `${siteName}标签页已返回同步结果；tabId=${tab.id}；耗时=${Date.now() - dispatchStartedAt}ms。`
+        : `${siteName}标签页同步消息失败；tabId=${tab.id}；${responseError || '未返回错误信息'}`,
+      runId,
+      recordCount: batchRecords.length,
+      elapsedMs: Date.now() - dispatchStartedAt,
+      response: {
+        ok: Boolean(response?.ok),
+        error: responseError,
+        contextInvalidated: /Extension context invalidated|message port closed|Receiving end does not exist|Could not establish connection/i.test(responseError)
+      },
+      tab: await getTabSnapshot(tab.id)
+    }, true);
     if (!response?.ok) break;
 
     const data = response.data || {};
@@ -493,16 +559,12 @@ async function refreshSelectedRecords(message) {
     activeJobDetailRefreshRunId = null;
   }
   if (!response?.ok && !stopped) {
-    const logEntry = {
-      time: new Date().toISOString(),
+    await appendSyncReloadLog({
       siteKey,
       step: 'refresh:messageResponse',
       request: { type: 'JOB_CHAT_REFRESH_RECORDS', tabId: tab.id, recordKeys: records.map((record) => record.recordKey), rate: message.rate, debugLog: Boolean(message.debugLog) },
       response: { ok: Boolean(response?.ok), error: String(response?.error || '').slice(0, 500) }
-    };
-    const requestLogStore = await chrome.storage.local.get(['jobChatRequestLogs']);
-    const logs = Array.isArray(requestLogStore.jobChatRequestLogs) ? requestLogStore.jobChatRequestLogs : [];
-    await chrome.storage.local.set({ jobChatRequestLogs: [...logs, logEntry].slice(-1000) });
+    });
     throw new Error(response?.error || '更新详情失败。');
   }
   const refreshed = [...refreshedByKey.values()];
@@ -596,9 +658,11 @@ async function prepareSyncFromTab(tab) {
 
   await chrome.storage.local.set({
     jobChatLiepinCancelRequested: true,
-    jobChatCancelRequested: true,
-    jobChatRequestLogs: []
+    jobChatCancelRequested: true
   });
+  try {
+    chrome.runtime.sendMessage({ type: 'JOB_CHAT_LOG_EVENT', logType: 'clear' }).catch(() => {});
+  } catch (_) {}
   let response = await sendExtractMessage(tab.id, { ...site, messageType: 'JOB_CHAT_PREPARE_SYNC' });
   if (!response?.ok) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: CONTENT_SCRIPT_FILES });
@@ -1004,18 +1068,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => saveRefreshProgressRecord(progress))
       .then(() => chrome.storage.local.set({ jobChatRefreshProgress: { ...progress, updatedAt: new Date().toISOString() } }));
     jobDetailProgressSaveQueue
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
-    return true;
-  }
-
-  if (message?.type === 'JOB_CHAT_REFRESH_LOG') {
-    chrome.storage.local.get(['jobChatRefreshLogs'])
-      .then((store) => {
-        const logs = Array.isArray(store.jobChatRefreshLogs) ? store.jobChatRefreshLogs : [];
-        logs.push({ time: new Date().toISOString(), ...(message.entry || {}) });
-        return chrome.storage.local.set({ jobChatRefreshLogs: logs.slice(-200) });
-      })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

@@ -81,6 +81,9 @@
     const jobRef = normalizeJobRef(record?.jobRef);
     const jobInfo = record?.jobInfo;
     const requiredFields = ['title', 'category', 'location', 'experience', 'education', 'salary', 'description', 'address'];
+    if (record?.boss?.jobDetailStatus === 'expired' && normalizeText(jobInfo?.fetchStatus) === 'success') {
+      return true;
+    }
     return Boolean(
       jobRef.externalId
       && jobInfo
@@ -91,6 +94,8 @@
   }
 
   function makeRecordKey(record) {
+    const explicitRecordKey = normalizeText(record?.recordKey);
+    if (explicitRecordKey) return explicitRecordKey;
     const siteKey = normalizeText(record?.siteKey || '');
     const sourceName = normalizeText(record?.sourceName || '');
     const bossId = normalizeText(record?.boss?.encryptBossId || record?.boss?.bossId || '');
@@ -103,7 +108,6 @@
     if ((siteKey === 'boss' || sourceName === 'BOSS直聘') && bossFriendId) return `boss|${bossFriendId.toLowerCase()}`;
     const oppositeImId = normalizeText(record?.liepin?.oppositeImId || '');
     if ((siteKey === 'liepin' || sourceName === '猎聘') && oppositeImId) return `liepin|${oppositeImId.toLowerCase()}`;
-    if (record?.recordKey) return normalizeText(record.recordKey);
     return [sourceName || siteKey || '', record.companyName, record.jobName, recruiterInfo(record)]
       .map((v) => normalizeText(v).toLowerCase())
       .join('|');

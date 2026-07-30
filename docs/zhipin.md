@@ -126,7 +126,7 @@ GET https://www.zhipin.com/wapi/zpchat/geek/getBossData?bossId=<bossId>&bossSour
 - 忽略记录不会进入同步队列。
 - 首选去重键：`encryptBossId|jobId`。
 - 其次可使用 `securityId`、`encryptFriendId` 或 `friendId`。
-- 同步结果会在记录的 `boss` 对象中保存发送所需的稳定字段，包括 `ownerUserId`、`friendId`、`peerKey`、`chatSecurityId`、`uploadSecurityId`、`jobId` 和 `encryptJobId`。
+- 同步结果会在记录的 `boss` 对象中保存发送所需的稳定字段，包括 `ownerUserId`、`friendId`、`peerKey`、`chatSecurityId`、`uploadSecurityId`、`jobId` 和 `encryptJobId`；另存 `relationFriendId` 供 `getGeekFriendList.json` 查询联系人详情。
 - 已存在记录仅在最后消息 ID（`lastMessageInfo.msgId`）变化，或消息状态变化时才会重新同步。
 - 消息状态转换规则：BOSS 返回 `lastMessageInfo.status === '1'` 时，插件记录为 `'0'`；其他情况记录为 `'1'`。
 - 实际同步逐条执行，间隔由 `jobChatSyncRateSettings` 或兼容的 `jobChatSyncRateLimit` 控制；默认约为 500 ms。
@@ -137,10 +137,17 @@ GET https://www.zhipin.com/wapi/zpchat/geek/getBossData?bossId=<bossId>&bossSour
 
 旧记录缺少字段时，扩展只为本批次中信息不全的目标执行补全：
 
-1. 调用 `geekFilterByLabel?labelId=0`，按 recordKey 中的 peerKey 或已有 friendId 精确定位联系人。
-2. 仅把匹配到的 friendId 分批提交给 `getGeekFriendList.json`，每批最多 150 个。
-3. 必要时调用一次 `getBossData`，补充权威数字 bossId、加密 bossId 和岗位字段。
-4. 将补全后的稳定字段回写总记录，供后续发送直接复用。
+1. 调用 `geekFilterByLabel?labelId=0`，按 recordKey 中的 peerKey、岗位 ID 或已有关系 ID 精确定位联系人。
+2. 仅把匹配到的 `relationFriendId` 分批提交给 `getGeekFriendList.json`，每批最多 150 个。
+3. 联系人列表请求成功后，当前目标如果不在返回结果中，则以成功终态保存
+   `boss.jobDetailStatus="expired"`，岗位说明显示“最近沟通时间超过30天，无法获取详情”，
+   不再使用记录内的旧聊天凭据继续查询，也不再反复进入未同步队列。
+4. 同一招聘者存在多个岗位时，以目标 `recordKey` 中的岗位 ID 为准；联系人列表项或
+   `getBossData` 返回的是另一个岗位 ID，表示原目标岗位已不在当前结果中，对原记录使用
+   上述超期成功终态，不以新岗位覆盖，也不报告“岗位已变化”失败。
+5. 目标仍在联系人列表且岗位 ID 一致时，必要时调用一次 `getBossData`，补充权威数字
+   bossId、加密 bossId 和岗位字段。
+6. 将补全后的稳定字段回写总记录，供后续发送直接复用。
 
 如果联系人详情接口失败，扩展会继续尝试使用联系人列表已有字段。单条记录仍无法精确匹配或补齐时，该条发送状态标为“失败”，备注显示“标识不全，需要重新同步记录再发送”，不会阻断同批次其他有效记录。
 

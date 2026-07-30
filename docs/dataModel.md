@@ -124,8 +124,8 @@ jobChatPreparedSourceList
 | `importedAt` | ISO string | CSV 导入时间；仅导入记录可能存在 |
 | `ignoredAt` | ISO string | 记录被加入忽略列表的时间 |
 
-这些字段不作为结果页表格列。JSON 导出也不包含它们；CSV 的“内部数据”可能包含其中
-未被显式剔除的字段。
+这些字段不作为结果页表格列。普通 JSON/CSV 导出不包含它们；总览页 `debug=true`
+时会进入调试 JSON 或 CSV 的“内部数据”。
 
 ## 4. `recordKey` 生成规则
 
@@ -133,6 +133,10 @@ jobChatPreparedSourceList
 
 - 合并同步记录。
 - CSV 增量导入。
+
+记录已经存在显式 `recordKey` 时，该值是权威且稳定的唯一标识；页面规范化、岗位刷新和
+本地存储迁移不会根据后续变化的 `boss.jobId` 重新生成或替换它。仅缺少 `recordKey`
+的旧记录才根据下述规则补齐。
 - 删除、忽略、发送和更新岗位详情。
 - 判断记录是否已存在。
 
@@ -259,13 +263,14 @@ liepin|{liepin.oppositeImId}
 
 ## 7. BOSS 内部结构 `boss`
 
-`boss` 不显示在结果页表格或 JSON 输出中。CSV 会将非岗位相关字段放入“内部数据”列，
-用于恢复同步和发送功能。
+`boss` 不显示在结果页表格或普通 JSON/CSV 输出中。总览页 `debug=true` 时会进入调试
+JSON 和 CSV 的“内部数据”，用于恢复同步和发送功能。
 
 ```json
 {
   "ownerUserId": "",
   "friendId": "",
+  "relationFriendId": "",
   "peerKey": "",
   "chatSecurityId": "",
   "friendSource": "",
@@ -284,7 +289,8 @@ liepin|{liepin.oppositeImId}
 | 字段 | 作用 |
 |---|---|
 | `ownerUserId` | 当前登录求职者账号 ID；发送消息时校验账号归属 |
-| `friendId` | 招聘者数值 ID；请求联系人详情和发送消息 |
+| `friendId` | 招聘者数值用户 ID；WebSocket 发送消息 |
+| `relationFriendId` | 标签联系人列表中的关系 ID；请求 `getGeekFriendList.json` |
 | `peerKey` | 聊天对端加密标识；发送消息 |
 | `chatSecurityId` | 联系人/聊天访问凭据；联系人数据匹配和岗位访问准备 |
 | `friendSource` | 联系人来源类型；调用 `getBossData` |
@@ -303,7 +309,8 @@ liepin|{liepin.oppositeImId}
 
 ## 8. 猎聘内部结构 `liepin`
 
-`liepin` 不显示在结果页表格或 JSON 输出中，但会进入 CSV“内部数据”列。
+`liepin` 不显示在结果页表格或普通 JSON/CSV 输出中；总览页 `debug=true` 时会进入
+调试 JSON 和 CSV 的“内部数据”。
 
 ```json
 {
@@ -449,7 +456,7 @@ JSON 预览、复制 JSON 和下载 JSON 使用同一结构：
 ]
 ```
 
-JSON 不包含：
+普通总览页 JSON 不包含：
 
 - `siteKey`
 - `index`
@@ -462,9 +469,13 @@ JSON 不包含：
 JSON 是展示/分析输出，不是完整备份格式。仅凭 JSON 无法恢复发送消息和增量同步所需的
 站点内部字段。
 
+总览页 URL 增加 `debug=true` 后进入调试数据模式。JSON 预览、复制及下载会在上述公共
+字段基础上保留原记录的 `siteKey`、时间戳、`boss`、`liepin` 及其他内部字段，可用于
+完整问题排查和备份。
+
 ## 12. CSV 输出模型
 
-CSV 列固定为：
+普通模式 CSV 列固定为：
 
 ```text
 唯一索引id
@@ -477,11 +488,10 @@ CSV 列固定为：
 招聘者
 状态
 原消息
-内部数据
 ```
 
-前十列来自页面公共字段。“内部数据”是单条记录剔除页面字段和岗位字段后得到的 JSON
-对象，典型内容如下：
+总览页 URL 增加 `debug=true` 后，CSV 追加“内部数据”列。该列是单条记录剔除页面公共
+字段后得到的完整 JSON 对象，典型内容如下：
 
 ```json
 {
@@ -492,6 +502,7 @@ CSV 列固定为：
   "boss": {
     "ownerUserId": "",
     "friendId": "",
+    "relationFriendId": "",
     "peerKey": "",
     "chatSecurityId": "",
     "friendSource": "",
@@ -508,22 +519,10 @@ CSV 列固定为：
 }
 ```
 
-### 12.1 CSV 明确排除的岗位数据
+### 12.1 调试 CSV 内部数据
 
-“内部数据”会删除：
-
-- `jobRef`
-- `jobInfo`
-- `companyKey`
-- `bossJobSecurityId`
-- `externalJobId`
-- `jobDetailAccessToken`
-- `boss.encryptJobId`
-- `boss.bossJobSecurityId`
-- `boss.bossSecurityId`
-
-因此 CSV 可以恢复聊天同步和发送所需信息，但不能恢复岗位详情。岗位详情需要导入后
-重新同步。
+调试 CSV 的“内部数据”保留 `jobRef`、`jobInfo`、`companyKey`、`boss`、`liepin` 和
+其他未显示在公共列中的字段。普通模式不生成该列。
 
 ### 12.2 CSV 导入合并
 
@@ -531,10 +530,12 @@ CSV 导入是按 `recordKey` 增量合并，不是覆盖全部数据库：
 
 - 新 `recordKey` 新增记录。
 - 已存在的 `recordKey` 更新可见字段。
-- 有有效“内部数据”时，深度合并 `boss`、`boss.lastMessageInfo` 和 `liepin`。
+- 仅总览页 `debug=true` 时允许导入“内部数据”；普通模式遇到非空内部数据会拒绝导入。
+- 调试模式有有效“内部数据”时，导入值覆盖同名内部字段，并深度合并
+  `boss`、`boss.lastMessageInfo` 和 `liepin`。
 - 没有“内部数据”时，保留数据库中已有的 `boss` 和 `liepin`。
-- 始终保留数据库中已有的 `jobRef`、`jobInfo` 和 `companyKey`。
-- CSV 中的空岗位结构不会覆盖数据库中的岗位信息。
+- 调试内部数据可以新增或覆盖 `jobRef`、`jobInfo`、`companyKey` 等岗位字段。
+- 普通模式或没有内部数据时，保留数据库中已有的岗位字段。
 
 CSV 的“内部数据”包含账号和联系人标识，应按敏感备份文件管理。
 
@@ -776,10 +777,14 @@ jobChatPreparedSourceList
 
 ### 17.3 日志
 
+岗位及同步请求/响应日志、岗位更新摘要和标签页刷新日志通过运行时消息发送到当前结果页，
+仅保存在 `results.js` 的内存数组中。当前页面最多保留最近 1000 条请求日志和 200 条摘要；
+开始新任务时清空，结果页关闭或刷新后丢失，不写入 `chrome.storage.local`。
+
+仅 BOSS 批量发送日志仍使用本地存储：
+
 | 存储键 | 类型 | 上限 | 说明 |
 |---|---|---:|---|
-| `jobChatRequestLogs` | array | 80 | 岗位及同步请求/响应完整日志 |
-| `jobChatRefreshLogs` | array | 200 | 岗位更新流程摘要和标签页刷新日志 |
 | `jobChatBossSendLogs` | array | 200 | BOSS 批量发送日志 |
 
 日志仅在页面日志区域按配置显示，不进入 JSON 或 CSV。岗位请求日志可能包含完整 URL、
@@ -837,17 +842,19 @@ jobChatPreparedSourceList
 
 | 数据来源 | 可恢复页面字段 | 可恢复同步/发送字段 | 可恢复岗位信息 | 可恢复公司资料/运行状态 |
 |---|---:|---:|---:|---:|
-| JSON 导出 | 是 | 否 | 是 | 否 |
-| 当前 CSV 导出 | 是 | 是 | 否 | 否 |
-| 旧 CSV，无“内部数据” | 是 | 否 | 否 | 否 |
+| 普通 JSON 导出 | 是 | 否 | 是 | 否 |
+| 普通 CSV 导出 | 是 | 否 | 否 | 否 |
+| `debug=true` JSON 导出 | 是 | 是 | 是 | 否 |
+| `debug=true` CSV 导出 | 是 | 是 | 是 | 否 |
 | 完整 `chrome.storage.local` 备份 | 是 | 是 | 是 | 是 |
 
 如果目标是灾难恢复：
 
-1. CSV 适合备份聊天记录和站点内部发送/增量同步字段。
-2. 岗位信息可以在恢复后重新拉取。
-3. JSON 可单独保存当前岗位信息，但当前项目没有 JSON 导入功能。
-4. 公司资料、忽略列表、日志、设置和同步状态只有完整本地存储备份才能恢复。
+1. 普通 CSV 适合导出可见聊天记录；调试 CSV 可备份站点内部发送、增量同步和岗位字段。
+2. 普通 CSV 恢复后需要重新拉取岗位信息。
+3. 调试 JSON 可完整导出单条记录，但当前项目没有 JSON 导入功能。
+4. 公司资料、忽略列表、BOSS 批量发送日志、设置和同步状态只有完整本地存储备份才能恢复。
+   一次性同步日志不进入备份。
 
 ## 20. 敏感数据
 
@@ -863,7 +870,7 @@ jobChatPreparedSourceList
 - `liepin.oppositeImId`
 - `jobChatPreparedSourceList.list`
 - `jobChatBossFriendListCapture`
-- `jobChatRequestLogs`
+- 结果页内存中的一次性请求日志
 - `jobChatBossPcDeviceId`
 
 JSON、CSV、日志或浏览器本地存储备份均不应发布到公开仓库，也不应发送给不可信第三方。

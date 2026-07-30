@@ -115,6 +115,10 @@
     return normalizeText(record?.boss?.jobId || bossRecordKeyPartsFromStoredKey(record).jobId).toLowerCase();
   }
 
+  function bossRelationFriendIdOfItem(item) {
+    return normalizeText(item?.friendId || item?.id || item?.relationId || item?.friend?.friendId);
+  }
+
   function bossContactMatchesItem(record, item) {
     const stored = bossRecordKeyPartsFromStoredKey(record);
     const recordBossIds = new Set([
@@ -130,6 +134,9 @@
       item?.encryptFriendId
     ].map((value) => normalizeText(value).toLowerCase()).filter(Boolean);
     if (itemBossIds.some((value) => recordBossIds.has(value))) return true;
+
+    const recordRelationFriendId = normalizeText(record?.boss?.relationFriendId);
+    if (recordRelationFriendId && recordRelationFriendId === bossRelationFriendIdOfItem(item)) return true;
 
     const recordFriendId = normalizeText(record?.boss?.friendId);
     const itemFriendIds = [
@@ -158,6 +165,25 @@
     return candidates.find((item) => bossJobMatchesItem(record, item)) || candidates[0] || null;
   }
 
+  function bossExpiredJobRecord(record) {
+    const message = '最近沟通时间超过30天，无法获取详情';
+    return {
+      ...record,
+      boss: {
+        ...(record?.boss || {}),
+        jobDetailStatus: 'expired'
+      },
+      jobInfo: globalThis.JobChatRecords.normalizeJobInfo({
+        ...(record?.jobInfo || {}),
+        description: message,
+        fetchStatus: 'success',
+        fetchedAt: new Date().toISOString(),
+        errorMessage: message
+      }),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
   function bossDetailJobId(detail) {
     return normalizeText(
       detail?.job?.jobId
@@ -173,6 +199,7 @@
       ...oldBoss,
       ownerUserId: ownerUserId || oldBoss.ownerUserId || '',
       friendId: data.bossId || item?.uid || item?.bossId || item?.friendId || oldBoss.friendId || '',
+      relationFriendId: bossRelationFriendIdOfItem(item) || oldBoss.relationFriendId || '',
       friendSource: item?.friendSource ?? item?.sourceType ?? oldBoss.friendSource ?? '',
       bossId: data.bossId || item?.uid || item?.bossId || oldBoss.bossId || '',
       encryptBossId: data.encryptBossId || item?.encryptBossId || item?.encryptUid || oldBoss.encryptBossId || '',
@@ -371,7 +398,7 @@
     const ids = [];
     const seen = new Set();
     list.forEach((item) => {
-      const id = normalizeText(item?.friendId || item?.id || item?.relationId || item?.friend?.friendId);
+      const id = bossRelationFriendIdOfItem(item);
       if (!id || seen.has(id)) return;
       seen.add(id);
       ids.push(id);
@@ -390,17 +417,17 @@
     const labelByFriendId = new Map();
     const labelByOrder = Array.isArray(labelList) ? labelList : [];
     labelByOrder.forEach((item) => {
-      const id = normalizeText(item?.friendId);
+      const id = bossRelationFriendIdOfItem(item);
       if (id) labelByFriendId.set(id, item);
     });
 
     const merged = detailList.map((item, index) => {
-      const id = normalizeText(item?.friendId);
+      const id = bossRelationFriendIdOfItem(item);
       const labelItem = (id && labelByFriendId.get(id)) || labelByOrder[index] || {};
       return {
         ...labelItem,
         ...item,
-        friendId: item?.friendId || labelItem?.friendId || '',
+        friendId: id || bossRelationFriendIdOfItem(labelItem),
         friendSource: item?.friendSource ?? labelItem?.friendSource ?? '',
         encryptFriendId: item?.encryptFriendId || labelItem?.encryptFriendId || '',
         updateTime: item?.updateTime || labelItem?.updateTime || item?.lastMessageInfo?.msgTime || item?.lastTS || ''
@@ -408,7 +435,7 @@
     });
     const mergedFriendIds = new Set(merged.map((item) => normalizeText(item?.friendId)).filter(Boolean));
     labelByOrder.forEach((item) => {
-      const id = normalizeText(item?.friendId);
+      const id = bossRelationFriendIdOfItem(item);
       if (id && mergedFriendIds.has(id)) return;
       merged.push(item);
       if (id) mergedFriendIds.add(id);
@@ -811,6 +838,7 @@
         ...(existingRecord?.boss || {}),
         ownerUserId: ownerUserId || existingRecord?.boss?.ownerUserId || '',
         friendId: data.bossId || item.uid || item.friendId || existingRecord?.boss?.friendId || '',
+        relationFriendId: bossRelationFriendIdOfItem(item) || existingRecord?.boss?.relationFriendId || '',
         friendSource: item.friendSource ?? existingRecord?.boss?.friendSource ?? '',
         encryptFriendId: item.encryptFriendId || existingRecord?.boss?.encryptFriendId || '',
         bossId: data.bossId || item.uid || existingRecord?.boss?.bossId || '',
@@ -1086,10 +1114,7 @@
     });
     if (!targets.length) return { records: [], results: [] };
     const beforeRequest = createBossRequestPacer(options.rate, options.shouldStop, options.signal);
-    const lookupTargets = targets.filter((record) => (
-      !normalizeText(record?.boss?.chatSecurityId)
-      || !normalizeText(record?.boss?.friendId)
-    ));
+    const lookupTargets = targets;
     let selectedLabels = [];
     if (lookupTargets.length) {
       try {
@@ -1097,17 +1122,18 @@
         selectedLabels = labelList.filter((item) => lookupTargets.some((record) => bossContactMatchesItem(record, item)));
         options.onLog?.({
           step: 'refresh:contactLookup',
-          message: `有 ${lookupTargets.length} 条目标缺少 chatSecurityId 或 friendId，从当前联系人列表精确匹配到 ${selectedLabels.length} 条`
+          message: `重新校验 ${lookupTargets.length} 条目标的联系人关系 ID，从当前联系人列表精确匹配到 ${selectedLabels.length} 条`
         });
       } catch (error) {
         options.onLog?.({ step: 'refresh:contactLookup', message: `重新拉取联系人列表失败：${error?.message || String(error)}` });
+        throw error;
       }
     }
-    const selectedFriendIds = [...new Set([
-      ...targets.map((record) => normalizeText(record?.boss?.friendId)),
-      ...bossFriendIdsFromLabelList(selectedLabels)
-    ].filter(Boolean))];
-    options.onLog?.({ step: 'refresh:selectedTargets', message: `按已保存记录顺序更新 ${targets.length} 条目标，仅请求 ${selectedFriendIds.length} 个 friendId 的详情` });
+    const expiredRecordKeys = new Set(targets
+      .filter((record) => !findBossItemForRefresh(record, selectedLabels))
+      .map((record) => String(record.recordKey || '')));
+    const selectedFriendIds = bossFriendIdsFromLabelList(selectedLabels);
+    options.onLog?.({ step: 'refresh:selectedTargets', message: `按已保存记录顺序更新 ${targets.length} 条目标，仅请求 ${selectedFriendIds.length} 个联系人关系 ID 的详情` });
     let detailList = [];
     try {
       detailList = selectedFriendIds.length ? await fetchBossFriendDetailList(selectedFriendIds, options.onLog, beforeRequest, options.signal) : [];
@@ -1120,14 +1146,16 @@
     }
     const list = mergeBossFriendDetailList(selectedLabels, detailList);
     let ownerUserId = '';
-    try {
-      ownerUserId = await fetchBossOwnerUserId(options.onLog, beforeRequest, options.signal);
-    } catch (error) {
-      if (isBossRefreshStopped(error, options.signal)) {
-        targets.forEach((record) => options.onProgress?.({ recordKey: record.recordKey, status: '已停止', completed: 0, total: targets.length }));
-        return { records: [], results: [], stopped: true, jobDetail: createJobDetailSyncStats() };
+    if (expiredRecordKeys.size < targets.length) {
+      try {
+        ownerUserId = await fetchBossOwnerUserId(options.onLog, beforeRequest, options.signal);
+      } catch (error) {
+        if (isBossRefreshStopped(error, options.signal)) {
+          targets.forEach((record) => options.onProgress?.({ recordKey: record.recordKey, status: '已停止', completed: 0, total: targets.length }));
+          return { records: [], results: [], stopped: true, jobDetail: createJobDetailSyncStats() };
+        }
+        throw error;
       }
-      throw error;
     }
     const orderedTargets = [...targets];
     const updated = [];
@@ -1139,6 +1167,16 @@
       maxRequestsPerPage: 4
     });
     const notify = (progress) => { try { options.onProgress?.(progress); } catch (_) {} };
+    const completeAsExpired = (record, index) => {
+      const message = '最近沟通时间超过30天，无法获取详情';
+      const nextRecord = bossExpiredJobRecord(record);
+      updated.push(nextRecord);
+      jobDetailStats.success += 1;
+      results.push({ recordKey: record.recordKey, ok: true, jobInfoStatus: 'success', error: message });
+      notify({ recordKey: record.recordKey, status: '成功', error: message, completed: index + 1, total: orderedTargets.length, record: nextRecord });
+      options.onLog?.({ step: 'refresh:expired', message: `${record.recordKey}：${message}` });
+      return nextRecord;
+    };
     for (let index = 0; index < orderedTargets.length; index += 1) {
       if (await options.shouldStop?.()) break;
       const record = orderedTargets[index];
@@ -1150,6 +1188,10 @@
         completed: index,
         total: orderedTargets.length
       });
+      if (expiredRecordKeys.has(String(record.recordKey || ''))) {
+        completeAsExpired(record, index);
+        continue;
+      }
       const item = findBossItemForRefresh(record, list);
       if (!item) {
         jobDetailStats.failed += 1;
@@ -1160,12 +1202,7 @@
       const recordJobId = bossRecordJobId(record);
       const itemJobId = bossItemJobId(item);
       if (recordJobId && itemJobId && recordJobId !== itemJobId) {
-        const errorMessage = '联系人已匹配，但当前关联岗位已变化，无法用新岗位覆盖原记录。';
-        const contactRecord = refreshBossContactFields(record, item, null, ownerUserId);
-        updated.push(contactRecord);
-        jobDetailStats.failed += 1;
-        results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
-        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length, record: contactRecord });
+        completeAsExpired(record, index);
         continue;
       }
       let detail = null;
@@ -1181,12 +1218,7 @@
       }
       const detailJobId = bossDetailJobId(detail);
       if (recordJobId && detailJobId && recordJobId !== detailJobId) {
-        const errorMessage = '联系人已匹配，但联系人详情关联岗位已变化，无法用新岗位覆盖原记录。';
-        const contactRecord = refreshBossContactFields(record, item, detail, ownerUserId);
-        updated.push(contactRecord);
-        jobDetailStats.failed += 1;
-        results.push({ recordKey: record.recordKey, ok: false, error: errorMessage });
-        notify({ recordKey: record.recordKey, status: '失败', error: errorMessage, completed: index + 1, total: orderedTargets.length, record: contactRecord });
+        completeAsExpired(record, index);
         continue;
       }
       const baseRecord = bossListItemToRecord(item, detail, index, record, ownerUserId);
@@ -1354,6 +1386,7 @@
             ...(target?.boss || {}),
             ownerUserId,
             friendId,
+            relationFriendId: bossRelationFriendIdOfItem(item) || target?.boss?.relationFriendId || '',
             peerKey,
             chatSecurityId,
             friendSource: item.friendSource ?? item.sourceType ?? '',

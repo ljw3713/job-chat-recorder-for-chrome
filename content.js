@@ -192,7 +192,11 @@
           type: 'JOB_CHAT_REFRESH_PROGRESS',
           progress: { ...progress, storageScope: message.storageScope, runId: message.runId }
         }),
-        onLog: message.debugLog ? (entry) => chrome.runtime.sendMessage({ type: 'JOB_CHAT_REFRESH_LOG', entry }) : undefined
+        onLog: message.debugLog ? (entry) => chrome.runtime.sendMessage({
+          type: 'JOB_CHAT_LOG_EVENT',
+          logType: 'summary',
+          entry: { time: new Date().toISOString(), ...entry }
+        }).catch(() => {}) : undefined
       })
         .then((data) => sendResponse({ ok: true, data }))
         .catch((error) => sendResponse(abortController.signal.aborted

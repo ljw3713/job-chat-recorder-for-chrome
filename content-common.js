@@ -1,6 +1,5 @@
 (function () {
   const { formatDate } = globalThis.JobChatUtils;
-  let requestLogWriteQueue = Promise.resolve();
 
   function threeMonthsAgo() {
     const date = new Date();
@@ -129,18 +128,53 @@
   }
 
   function appendRequestLog(entry) {
-    requestLogWriteQueue = requestLogWriteQueue.catch(() => {}).then(async () => {
-      const store = await chrome.storage.local.get(['jobChatRequestLogs']);
-      const logs = Array.isArray(store.jobChatRequestLogs) ? store.jobChatRequestLogs : [];
-      logs.push({
-        time: new Date().toISOString(),
-        ...entry
+    try {
+      chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_LOG_EVENT',
+        logType: 'request',
+        entry: {
+          time: new Date().toISOString(),
+          ...entry
+        }
+      }).catch((error) => {
+        const errorMessage = error?.message || String(error);
+        const contextInvalidated = /Extension context invalidated/i.test(errorMessage);
+        console.error(
+          contextInvalidated
+            ? '[JobChat] 扩展上下文已失效，当前请求日志无法发送到结果页。通常是扩展被重新加载/更新，或标签页在同步过程中刷新、跳转。'
+            : '[JobChat] 请求日志发送失败。',
+          {
+            error: errorMessage,
+            contextInvalidated,
+            logStep: entry?.step || '',
+            siteKey: entry?.siteKey || '',
+            pageUrl: location.href,
+            readyState: document.readyState,
+            visibilityState: document.visibilityState,
+            entry
+          }
+        );
       });
-      await chrome.storage.local.set({ jobChatRequestLogs: logs.slice(-1000) });
-    }).catch((error) => {
-      console.error('[JobChat] 请求日志保存失败：', error);
-    });
-    return requestLogWriteQueue;
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+      const contextInvalidated = /Extension context invalidated/i.test(errorMessage);
+      console.error(
+        contextInvalidated
+          ? '[JobChat] 扩展上下文已失效，当前请求日志无法发送到结果页。通常是扩展被重新加载/更新，或标签页在同步过程中刷新、跳转。'
+          : '[JobChat] 请求日志发送失败。',
+        {
+          error: errorMessage,
+          contextInvalidated,
+          logStep: entry?.step || '',
+          siteKey: entry?.siteKey || '',
+          pageUrl: location.href,
+          readyState: document.readyState,
+          visibilityState: document.visibilityState,
+          entry
+        }
+      );
+    }
+    return Promise.resolve();
   }
 
   function detectSiteByLocation() {
