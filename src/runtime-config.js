@@ -10,7 +10,7 @@
     ga4ApiSecret: '',
     ratingPrompt: {
       storageKey: 'jobChatRatingPromptState',
-      clickThreshold: 0,
+      clickThreshold: 5,
       storeUrl: 'https://chromewebstore.google.com/detail/%E7%9B%B4%E8%81%98%E7%8C%8E%E8%81%98-%E6%B2%9F%E9%80%9A%E5%8A%A9%E6%89%8B/phnaloiemmlklelkahjmpmhemmdidkmj'
     },
     resultsPagePath(mode) {

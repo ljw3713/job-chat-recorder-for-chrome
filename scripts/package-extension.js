@@ -56,6 +56,14 @@ function copyPackageFiles() {
     fs.copyFileSync(sourcePath, targetPath);
   }
 
+  const packagedManifestPath = path.join(stageDir, 'manifest.json');
+  const packagedManifest = JSON.parse(fs.readFileSync(packagedManifestPath, 'utf8'));
+  if (!packagedManifest.name.endsWith('-dev')) {
+    throw new Error('Development manifest name must end with "-dev".');
+  }
+  packagedManifest.name = packagedManifest.name.slice(0, -'-dev'.length);
+  fs.writeFileSync(packagedManifestPath, `${JSON.stringify(packagedManifest, null, 2)}\n`);
+
   const runtimeConfigPath = path.join(stageDir, 'src/runtime-config.js');
   const developmentConfig = fs.readFileSync(runtimeConfigPath, 'utf8');
   let releaseConfig = developmentConfig.replace('enableDebugLog: true', 'enableDebugLog: false');

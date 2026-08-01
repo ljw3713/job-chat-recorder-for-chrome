@@ -136,7 +136,7 @@ await chrome.storage.local.remove('jobChatRatingPromptState')
 npm ci
 ```
 
-打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
+打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。源码中的 `manifest.name` 带有 `-dev` 后缀，便于区分本地加载的开发版；正式打包时脚本会自动移除该后缀。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
 
 打包阶段使用锁定版本的 `esbuild` 压缩全部 JavaScript：删除注释和多余空白，并进行安全的语法压缩；不生成 source map，也不执行字符串加密、控制流改写等代码混淆。由于扩展的多个脚本通过全局函数协作，压缩过程会保留标识符名称，避免跨文件调用失效。源文件不会被修改，压缩只发生在临时打包目录中。
 
