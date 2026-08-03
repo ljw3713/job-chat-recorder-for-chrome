@@ -24,6 +24,15 @@
     .online-only-text { position: relative; }
     .online-only-text::after { content: attr(data-tooltip); position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 1000; width: max-content; padding: 6px 8px; border-radius: 6px; background: #1f2937; color: #fff; font-size: 12px; line-height: 1.4; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(2px); transition: opacity 60ms ease, transform 60ms ease; }
     .online-only-text:hover::after { opacity: 1; visibility: visible; transform: translateY(0); }
+    .company-filter-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+    .company-filter-option { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; color: #374151; font-size: 13px; cursor: pointer; }
+    .company-filter-option input { width: 15px; height: 15px; margin: 0; accent-color: #16a085; cursor: pointer; }
+    .company-filter-row.disabled .company-filter-option { color: #9ca3af; cursor: not-allowed; }
+    .company-filter-row.disabled input { cursor: not-allowed; }
+    .company-filter-keywords { min-width: 0; flex: 1; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 8px; color: #374151; font-size: 12px; outline: none; }
+    .company-filter-keywords::placeholder { color: #b6bbc4; }
+    .company-filter-keywords:focus { border-color: #16a085; box-shadow: 0 0 0 2px rgba(22, 160, 133, .12); }
+    .company-filter-keywords:disabled { background: #f3f4f6; color: #9ca3af; }
     .spinner { display: none; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.5); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
     body.loading .spinner { display: inline-block; }
     body.loading #extractBtn { background: #0f766e; }
@@ -41,6 +50,13 @@
       <input id="onlineOnlyCheckbox" type="checkbox" />
       <span id="onlineOnlyText" class="online-only-text" data-tooltip="修改后需要刷新当前招聘页面才能生效">仅在线</span>
     </label>
+    <div id="companyFilterRow" class="company-filter-row">
+      <label class="company-filter-option">
+        <input id="companyFilterCheckbox" type="checkbox" />
+        <span class="online-only-text" data-tooltip="修改后需要刷新当前招聘页面才能生效">不显示</span>
+      </label>
+      <input id="companyFilterKeywords" class="company-filter-keywords" type="text" placeholder="输入不想看到的关键字，用|分割" />
+    </div>
     <div id="error" class="error"></div>
   </div>
   <script src="src/runtime-config.js"></script>

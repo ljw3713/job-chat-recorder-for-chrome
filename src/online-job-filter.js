@@ -5,6 +5,9 @@
   const offlineIdentifiers = new Set();
   let activeAdapter = null;
   let enabled = false;
+  let companyFilterEnabled = false;
+  let companyKeywords = [];
+  let settingsKnown = false;
   let observer = null;
   let renderQueued = false;
   let hasMore = false;
@@ -18,14 +21,14 @@
   const FILL_CHECK_DELAY_MS = 160;
   const REQUEST_START_TIMEOUT_MS = 1200;
   const REQUEST_FINISH_TIMEOUT_MS = 15000;
-  const LIEPIN_HIDDEN_CARD_CLASS = 'job-chat-online-only-hidden';
+  const LIEPIN_FILTERED_CARD_CLASS = 'job-chat-filtered-card-hidden';
   const FILTER_STYLE_ID = 'job-chat-online-only-filter-style';
 
   function ensureFilterStyle() {
     if (document.getElementById(FILTER_STYLE_ID)) return;
     const style = document.createElement('style');
     style.id = FILTER_STYLE_ID;
-    style.textContent = `.${LIEPIN_HIDDEN_CARD_CLASS} { display: none !important; }`;
+    style.textContent = `.${LIEPIN_FILTERED_CARD_CLASS} { display: none !important; }`;
     (document.head || document.documentElement)?.appendChild(style);
   }
 
@@ -42,9 +45,30 @@
 
   function filterCurrentCards() {
     renderQueued = false;
-    if (!enabled || !activeAdapter || !offlineIdentifiers.size) return;
-    activeAdapter.filterCards(document, offlineIdentifiers);
+    if (!hasActiveFilter()) return;
+    activeAdapter.filterCards(document, offlineIdentifiers, {
+      onlineOnlyEnabled: enabled,
+      companyFilterEnabled,
+      companyKeywords
+    });
     scheduleFillCheck();
+  }
+
+  function normalizeCompanyKeywords(value) {
+    return [...new Set(String(value || '')
+      .split('|')
+      .map((keyword) => keyword.trim().toLocaleLowerCase())
+      .filter(Boolean))];
+  }
+
+  function hasActiveFilter() {
+    return Boolean(activeAdapter && (enabled || (companyFilterEnabled && companyKeywords.length)));
+  }
+
+  function textIncludesKeyword(card, selector, keywords) {
+    if (!keywords.length) return false;
+    const text = String(card.querySelector(selector)?.textContent || '').trim().toLocaleLowerCase();
+    return Boolean(text && keywords.some((keyword) => text.includes(keyword)));
   }
 
   function queueFilter() {
@@ -63,7 +87,8 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['href']
+      attributeFilter: ['href'],
+      characterData: true
     });
   }
 
@@ -97,14 +122,14 @@
   function dispatchScrollSignal() {
     window.dispatchEvent(new Event('scroll'));
     fallbackScrollTimer = setTimeout(() => {
-      if (!enabled || !autoRequestPending || !hasMore) return;
+      if (!hasActiveFilter() || !autoRequestPending || !hasMore) return;
       document.dispatchEvent(new Event('scroll'));
     }, 250);
   }
 
   function checkAndRequestMore() {
     fillCheckTimer = null;
-    if (!enabled || !hasMore || requestInFlight || autoLoadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) return;
+    if (!hasActiveFilter() || !hasMore || requestInFlight || autoLoadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) return;
     if (!listNeedsMoreJobs()) {
       autoLoadAttempts = 0;
       return;
@@ -146,7 +171,7 @@
     const identifiers = typeof activeAdapter?.identifiersFromPayload === 'function'
       ? activeAdapter.identifiersFromPayload(payload)
       : [];
-    if (Array.isArray(identifiers)) {
+    if (enabled && Array.isArray(identifiers)) {
       identifiers.forEach((identifier) => {
         const normalized = typeof activeAdapter?.normalizeIdentifier === 'function'
           ? activeAdapter.normalizeIdentifier(identifier)
@@ -159,18 +184,22 @@
   }
 
   function notifyPageHook() {
-    if (!activeAdapter?.commandSource || !activeAdapter?.setCommandType) return;
+    if (!settingsKnown || !activeAdapter?.commandSource || !activeAdapter?.setCommandType) return;
     window.postMessage({
       source: activeAdapter.commandSource,
-      command: { type: activeAdapter.setCommandType, enabled }
+      command: { type: activeAdapter.setCommandType, enabled: hasActiveFilter() }
     }, '*');
   }
 
-  function setEnabled(nextEnabled) {
-    enabled = Boolean(nextEnabled && activeAdapter);
-    if (enabled) {
+  function applySettings(onlineOnly, companyFilter, keywords) {
+    enabled = Boolean(onlineOnly && activeAdapter);
+    companyFilterEnabled = Boolean(companyFilter && activeAdapter);
+    companyKeywords = normalizeCompanyKeywords(keywords);
+    settingsKnown = true;
+    if (hasActiveFilter()) {
       ensureFilterStyle();
       startObserver();
+      queueFilter();
     }
     else {
       observer?.disconnect();
@@ -207,13 +236,13 @@
       return list.getBoundingClientRect().bottom <= currentWindow.innerHeight + 160
         || pageBottomDistance <= 160;
     },
-    filterCards(root, identifiers) {
+    filterCards(root, identifiers, options) {
       let removed = 0;
       root.querySelectorAll('.job-card-box').forEach((card) => {
         const hrefElements = card.matches('[href]')
           ? [card, ...card.querySelectorAll('[href]')]
           : [...card.querySelectorAll('[href]')];
-        const matched = hrefElements.some((element) => {
+        const offlineMatched = options.onlineOnlyEnabled && hrefElements.some((element) => {
           const rawHref = element.getAttribute('href') || '';
           let href = rawHref;
           try { href = decodeURIComponent(rawHref); } catch (_) {}
@@ -222,7 +251,9 @@
           }
           return false;
         });
-        if (matched) {
+        const companyMatched = options.companyFilterEnabled
+          && textIncludesKeyword(card, '.boss-name', options.companyKeywords);
+        if (offlineMatched || companyMatched) {
           card.remove();
           removed += 1;
         }
@@ -259,28 +290,31 @@
       return normalizeLiepinJobLink(identifier);
     },
     needsMoreJobs(root, currentWindow, pageBottomDistance) {
-      const cards = [...root.querySelectorAll(`.pull-up-li:not(.${LIEPIN_HIDDEN_CARD_CLASS})`)];
+      const cards = [...root.querySelectorAll(`.pull-up-li:not(.${LIEPIN_FILTERED_CARD_CLASS})`)];
       const lastCard = cards[cards.length - 1];
       const listMarker = lastCard || this.listRoot;
       return (listMarker && listMarker.getBoundingClientRect().bottom <= currentWindow.innerHeight + 160)
         || pageBottomDistance <= 160;
     },
-    filterCards(root, identifiers) {
+    filterCards(root, identifiers, options) {
       let hidden = 0;
       const cards = [...root.querySelectorAll('.pull-up-li')];
       if (cards.length) this.listRoot = cards[0].parentElement;
       cards.forEach((card) => {
         const jobLink = card.querySelector('a[data-nick="job-detail-job-info"][href]');
         const normalized = normalizeLiepinJobLink(jobLink?.getAttribute('href') || '');
-        const matched = Boolean(normalized && identifiers.has(normalized));
-        card.classList.toggle(LIEPIN_HIDDEN_CARD_CLASS, matched);
+        const offlineMatched = options.onlineOnlyEnabled && Boolean(normalized && identifiers.has(normalized));
+        const companyMatched = options.companyFilterEnabled
+          && textIncludesKeyword(card, '[class*="company-name-"]', options.companyKeywords);
+        const matched = offlineMatched || companyMatched;
+        card.classList.toggle(LIEPIN_FILTERED_CARD_CLASS, matched);
         if (matched) hidden += 1;
       });
       return hidden;
     },
     clearFilter(root) {
-      root.querySelectorAll(`.${LIEPIN_HIDDEN_CARD_CLASS}`).forEach((card) => {
-        card.classList.remove(LIEPIN_HIDDEN_CARD_CLASS);
+      root.querySelectorAll(`.${LIEPIN_FILTERED_CARD_CLASS}`).forEach((card) => {
+        card.classList.remove(LIEPIN_FILTERED_CARD_CLASS);
       });
     }
   });
@@ -294,7 +328,7 @@
       notifyPageHook();
       return;
     }
-    if (!enabled) return;
+    if (!hasActiveFilter()) return;
     if (payload.type === activeAdapter.requestStartedType) {
       markRequestStarted();
       return;
@@ -305,16 +339,24 @@
   async function initialize() {
     if (!activeAdapter) return;
     try {
-      const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET' });
-      setEnabled(Boolean(response?.ok && response.enabled));
+      const [onlineOnlyResponse, companyFilterResponse] = await Promise.all([
+        chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET' }),
+        chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_FILTER_GET' })
+      ]);
+      applySettings(
+        Boolean(onlineOnlyResponse?.ok && onlineOnlyResponse.enabled),
+        Boolean(companyFilterResponse?.ok && companyFilterResponse.enabled),
+        companyFilterResponse?.ok ? companyFilterResponse.keywords : ''
+      );
     } catch (_) {
-      setEnabled(false);
+      applySettings(false, false, '');
     }
   }
 
   globalThis.JobChatOnlineJobFilter = {
     registerAdapter,
-    isEnabled: () => enabled
+    isEnabled: () => enabled,
+    isCompanyFilterEnabled: () => companyFilterEnabled
   };
 
   initialize();

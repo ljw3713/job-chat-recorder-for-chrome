@@ -6,6 +6,9 @@ const overviewBtn = document.getElementById('overviewBtn');
 const onlineOnlyOption = document.getElementById('onlineOnlyOption');
 const onlineOnlyCheckbox = document.getElementById('onlineOnlyCheckbox');
 const onlineOnlyText = document.getElementById('onlineOnlyText');
+const companyFilterRow = document.getElementById('companyFilterRow');
+const companyFilterCheckbox = document.getElementById('companyFilterCheckbox');
+const companyFilterKeywordsInput = document.getElementById('companyFilterKeywords');
 let activeTab = null;
 
 const SUPPORTED_SITES = [
@@ -47,6 +50,15 @@ function setOnlineOnlyAvailability(site, enabled = false) {
     : '请先打开 BOSS直聘或猎聘页面';
 }
 
+function setCompanyFilterAvailability(site, enabled = false, keywords = '') {
+  const available = Boolean(site);
+  companyFilterCheckbox.disabled = !available;
+  companyFilterCheckbox.checked = available && Boolean(enabled);
+  companyFilterKeywordsInput.disabled = !available;
+  companyFilterKeywordsInput.value = String(keywords || '');
+  companyFilterRow.classList.toggle('disabled', !available);
+}
+
 async function refreshCurrentSiteHint() {
   const tab = await getActiveTab();
   activeTab = tab || null;
@@ -57,15 +69,21 @@ async function refreshCurrentSiteHint() {
   if (site) {
     currentSiteBox.textContent = `当前网站：${site.source}，可以提取。`;
     currentSiteBox.className = 'site ok';
-    const response = await chrome.runtime.sendMessage({
-      type: 'JOB_CHAT_ONLINE_ONLY_GET',
-      tabId: tab.id
-    });
-    setOnlineOnlyAvailability(site, response?.ok && response.enabled);
+    const [onlineOnlyResponse, companyFilterResponse] = await Promise.all([
+      chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET', tabId: tab.id }),
+      chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_FILTER_GET', tabId: tab.id })
+    ]);
+    setOnlineOnlyAvailability(site, onlineOnlyResponse?.ok && onlineOnlyResponse.enabled);
+    setCompanyFilterAvailability(
+      site,
+      companyFilterResponse?.ok && companyFilterResponse.enabled,
+      companyFilterResponse?.ok ? companyFilterResponse.keywords : ''
+    );
   } else {
     currentSiteBox.textContent = `当前网站：暂不支持。目前支持 ${supportedSiteNames()}。`;
     currentSiteBox.className = 'site warn';
     setOnlineOnlyAvailability(null, false);
+    setCompanyFilterAvailability(null, false, '');
   }
 }
 
@@ -91,6 +109,41 @@ onlineOnlyCheckbox.addEventListener('change', async () => {
   } finally {
     onlineOnlyCheckbox.disabled = false;
   }
+});
+
+companyFilterCheckbox.addEventListener('change', async () => {
+  errorBox.textContent = '';
+  const enabled = companyFilterCheckbox.checked;
+  companyFilterCheckbox.disabled = true;
+  try {
+    const tab = activeTab || await getActiveTab();
+    if (!tab?.id || !detectSupportedSite(tab.url || '')) {
+      throw new Error('请先打开 BOSS直聘或猎聘页面。');
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_COMPANY_FILTER_SET_ENABLED',
+      tabId: tab.id,
+      enabled
+    });
+    if (!response?.ok) throw new Error(response?.error || '无法保存关键字过滤设置。');
+    companyFilterCheckbox.checked = Boolean(response.enabled);
+  } catch (error) {
+    companyFilterCheckbox.checked = !enabled;
+    errorBox.textContent = error?.message || String(error);
+  } finally {
+    companyFilterCheckbox.disabled = false;
+  }
+});
+
+companyFilterKeywordsInput.addEventListener('input', () => {
+  chrome.runtime.sendMessage({
+    type: 'JOB_CHAT_COMPANY_FILTER_SET_KEYWORDS',
+    keywords: companyFilterKeywordsInput.value
+  }).then((response) => {
+    if (!response?.ok) throw new Error(response?.error || '无法保存关键字。');
+  }).catch((error) => {
+    errorBox.textContent = error?.message || String(error);
+  });
 });
 
 if (overviewBtn) {

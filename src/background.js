@@ -78,6 +78,9 @@ let sendProgressSaveQueue = Promise.resolve();
 let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
 const ONLINE_ONLY_TABS_STORAGE_KEY = 'jobChatOnlineOnlyTabs';
+const COMPANY_FILTER_TABS_STORAGE_KEY = 'jobChatCompanyFilterTabs';
+const COMPANY_FILTER_KEYWORDS_STORAGE_KEY = 'jobChatCompanyFilterKeywords';
+let companyFilterKeywordsSaveQueue = Promise.resolve();
 
 async function readOnlineOnlyTabs() {
   const store = await chrome.storage.session.get([ONLINE_ONLY_TABS_STORAGE_KEY]);
@@ -99,12 +102,53 @@ async function setOnlineOnlyState(tabId, enabled) {
   return Boolean(enabled);
 }
 
+async function companyFilterState(tabId) {
+  const store = await chrome.storage.session.get([COMPANY_FILTER_TABS_STORAGE_KEY]);
+  const tabs = store[COMPANY_FILTER_TABS_STORAGE_KEY];
+  return Boolean(tabs && typeof tabs === 'object' && tabs[String(tabId)]);
+}
+
+async function setCompanyFilterState(tabId, enabled) {
+  const store = await chrome.storage.session.get([COMPANY_FILTER_TABS_STORAGE_KEY]);
+  const tabs = store[COMPANY_FILTER_TABS_STORAGE_KEY]
+    && typeof store[COMPANY_FILTER_TABS_STORAGE_KEY] === 'object'
+    && !Array.isArray(store[COMPANY_FILTER_TABS_STORAGE_KEY])
+    ? store[COMPANY_FILTER_TABS_STORAGE_KEY]
+    : {};
+  const key = String(tabId);
+  if (enabled) tabs[key] = true;
+  else delete tabs[key];
+  await chrome.storage.session.set({ [COMPANY_FILTER_TABS_STORAGE_KEY]: tabs });
+  return Boolean(enabled);
+}
+
+async function companyFilterKeywords() {
+  const store = await chrome.storage.local.get([COMPANY_FILTER_KEYWORDS_STORAGE_KEY]);
+  return String(store[COMPANY_FILTER_KEYWORDS_STORAGE_KEY] || '');
+}
+
+async function setCompanyFilterKeywords(value) {
+  const keywords = String(value || '');
+  companyFilterKeywordsSaveQueue = companyFilterKeywordsSaveQueue.catch(() => {}).then(async () => {
+    await chrome.storage.local.set({ [COMPANY_FILTER_KEYWORDS_STORAGE_KEY]: keywords });
+    return keywords;
+  });
+  return companyFilterKeywordsSaveQueue;
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   readOnlineOnlyTabs().then(async (tabs) => {
     const key = String(tabId);
     if (!Object.prototype.hasOwnProperty.call(tabs, key)) return;
     delete tabs[key];
     await chrome.storage.session.set({ [ONLINE_ONLY_TABS_STORAGE_KEY]: tabs });
+  }).catch(() => {});
+  chrome.storage.session.get([COMPANY_FILTER_TABS_STORAGE_KEY]).then(async (store) => {
+    const tabs = store[COMPANY_FILTER_TABS_STORAGE_KEY];
+    const key = String(tabId);
+    if (!tabs || typeof tabs !== 'object' || !Object.prototype.hasOwnProperty.call(tabs, key)) return;
+    delete tabs[key];
+    await chrome.storage.session.set({ [COMPANY_FILTER_TABS_STORAGE_KEY]: tabs });
   }).catch(() => {});
 });
 
@@ -1301,6 +1345,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return setOnlineOnlyState(tabId, Boolean(message.enabled));
       })
       .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_COMPANY_FILTER_GET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    Promise.all([companyFilterState(tabId), companyFilterKeywords()])
+      .then(([enabled, keywords]) => sendResponse({ ok: true, enabled, keywords }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_COMPANY_FILTER_SET_ENABLED') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    chrome.tabs.get(tabId)
+      .then((tab) => {
+        if (message.enabled && !detectSupportedSite(tab?.url || '')) {
+          throw new Error('关键字岗位过滤目前只支持 BOSS直聘和猎聘。');
+        }
+        return setCompanyFilterState(tabId, Boolean(message.enabled));
+      })
+      .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_COMPANY_FILTER_SET_KEYWORDS') {
+    setCompanyFilterKeywords(message.keywords)
+      .then((keywords) => sendResponse({ ok: true, keywords }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
