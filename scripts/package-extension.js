@@ -30,6 +30,7 @@ const packageFiles = [
   'src/liepin-extractor.js',
   'src/content.js',
   'src/boss-hook.js',
+  'src/liepin-online-job-hook.js',
   'src/boss-message-protocol.js',
   'assets/icons/icon-16.png',
   'assets/icons/icon-32.png',

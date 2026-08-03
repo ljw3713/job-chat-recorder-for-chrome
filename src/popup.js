@@ -38,15 +38,13 @@ function setLoading(isLoading) {
 }
 
 function setOnlineOnlyAvailability(site, enabled = false) {
-  const available = site?.key === 'boss';
+  const available = Boolean(site);
   onlineOnlyCheckbox.disabled = !available;
   onlineOnlyCheckbox.checked = available && Boolean(enabled);
   onlineOnlyOption.classList.toggle('disabled', !available);
   onlineOnlyText.dataset.tooltip = available
     ? '修改后需要刷新当前招聘页面才能生效'
-    : site?.key === 'liepin'
-      ? '猎聘暂未支持仅在线过滤'
-      : '请先打开 BOSS直聘页面';
+    : '请先打开 BOSS直聘或猎聘页面';
 }
 
 async function refreshCurrentSiteHint() {
@@ -59,15 +57,11 @@ async function refreshCurrentSiteHint() {
   if (site) {
     currentSiteBox.textContent = `当前网站：${site.source}，可以提取。`;
     currentSiteBox.className = 'site ok';
-    if (site.key === 'boss') {
-      const response = await chrome.runtime.sendMessage({
-        type: 'JOB_CHAT_ONLINE_ONLY_GET',
-        tabId: tab.id
-      });
-      setOnlineOnlyAvailability(site, response?.ok && response.enabled);
-    } else {
-      setOnlineOnlyAvailability(site, false);
-    }
+    const response = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_ONLINE_ONLY_GET',
+      tabId: tab.id
+    });
+    setOnlineOnlyAvailability(site, response?.ok && response.enabled);
   } else {
     currentSiteBox.textContent = `当前网站：暂不支持。目前支持 ${supportedSiteNames()}。`;
     currentSiteBox.className = 'site warn';
@@ -81,8 +75,8 @@ onlineOnlyCheckbox.addEventListener('change', async () => {
   onlineOnlyCheckbox.disabled = true;
   try {
     const tab = activeTab || await getActiveTab();
-    if (!tab?.id || detectSupportedSite(tab.url || '')?.key !== 'boss') {
-      throw new Error('请先打开 BOSS直聘页面。');
+    if (!tab?.id || !detectSupportedSite(tab.url || '')) {
+      throw new Error('请先打开 BOSS直聘或猎聘页面。');
     }
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_ONLINE_ONLY_SET',

@@ -1295,8 +1295,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     chrome.tabs.get(tabId)
       .then((tab) => {
-        if (message.enabled && detectSupportedSite(tab?.url || '')?.key !== 'boss') {
-          throw new Error('目前仅支持 BOSS直聘的在线岗位过滤。');
+        if (message.enabled && !detectSupportedSite(tab?.url || '')) {
+          throw new Error('仅在线岗位过滤目前只支持 BOSS直聘和猎聘。');
         }
         return setOnlineOnlyState(tabId, Boolean(message.enabled));
       })

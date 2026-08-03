@@ -30,6 +30,16 @@
   "content_scripts": [
     {
       "matches": [
+        "https://*.liepin.com/*"
+      ],
+      "js": [
+        "src/liepin-online-job-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
         "https://*.zhipin.com/*"
       ],
       "js": [
