@@ -23,6 +23,7 @@ const packageFiles = [
   'src/shared-utils.js',
   'src/shared-records.js',
   'src/content-common.js',
+  'src/online-job-filter.js',
   'src/site-adapters.js',
   'src/job-sync-core.js',
   'src/boss-extractor.js',

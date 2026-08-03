@@ -61,6 +61,7 @@ const CONTENT_SCRIPT_FILES = [
   'src/shared-utils.js',
   'src/shared-records.js',
   'src/content-common.js',
+  'src/online-job-filter.js',
   'src/site-adapters.js',
   'src/job-sync-core.js',
   'src/boss-extractor.js',
@@ -76,6 +77,36 @@ let activeExtractionProgressContext = null;
 let sendProgressSaveQueue = Promise.resolve();
 let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
+const ONLINE_ONLY_TABS_STORAGE_KEY = 'jobChatOnlineOnlyTabs';
+
+async function readOnlineOnlyTabs() {
+  const store = await chrome.storage.session.get([ONLINE_ONLY_TABS_STORAGE_KEY]);
+  const value = store[ONLINE_ONLY_TABS_STORAGE_KEY];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+async function onlineOnlyState(tabId) {
+  const tabs = await readOnlineOnlyTabs();
+  return Boolean(tabs[String(tabId)]);
+}
+
+async function setOnlineOnlyState(tabId, enabled) {
+  const tabs = await readOnlineOnlyTabs();
+  const key = String(tabId);
+  if (enabled) tabs[key] = true;
+  else delete tabs[key];
+  await chrome.storage.session.set({ [ONLINE_ONLY_TABS_STORAGE_KEY]: tabs });
+  return Boolean(enabled);
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  readOnlineOnlyTabs().then(async (tabs) => {
+    const key = String(tabId);
+    if (!Object.prototype.hasOwnProperty.call(tabs, key)) return;
+    delete tabs[key];
+    await chrome.storage.session.set({ [ONLINE_ONLY_TABS_STORAGE_KEY]: tabs });
+  }).catch(() => {});
+});
 
 chrome.storage.local.remove(['jobChatRequestLogs', 'jobChatRefreshLogs', 'jobChatBossSendLogs']).catch(() => {});
 chrome.runtime.onInstalled.addListener((details) => {
@@ -1243,6 +1274,36 @@ async function saveRefreshProgressRecord(progress) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+
+  if (message?.type === 'JOB_CHAT_ONLINE_ONLY_GET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    onlineOnlyState(tabId)
+      .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_ONLINE_ONLY_SET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    chrome.tabs.get(tabId)
+      .then((tab) => {
+        if (message.enabled && detectSupportedSite(tab?.url || '')?.key !== 'boss') {
+          throw new Error('目前仅支持 BOSS直聘的在线岗位过滤。');
+        }
+        return setOnlineOnlyState(tabId, Boolean(message.enabled));
+      })
+      .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
 
   if (message?.type === 'JOB_CHAT_ANALYTICS_STATUS') {
     globalThis.JobChatAnalytics.status()

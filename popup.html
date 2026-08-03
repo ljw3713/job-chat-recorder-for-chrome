@@ -17,6 +17,13 @@
     .error { margin-top: 10px; color: #b91c1c; font-size: 12px; white-space: pre-wrap; }
     .hidden { display: none !important; }
     .secondary { margin-top: 8px; background: #2563eb; }
+    .online-only-option { margin-top: 10px; display: flex; align-items: center; gap: 7px; width: fit-content; color: #374151; font-size: 13px; cursor: pointer; }
+    .online-only-option input { width: 15px; height: 15px; margin: 0; accent-color: #16a085; cursor: pointer; }
+    .online-only-option.disabled { color: #9ca3af; cursor: not-allowed; }
+    .online-only-option.disabled input { cursor: not-allowed; }
+    .online-only-text { position: relative; }
+    .online-only-text::after { content: attr(data-tooltip); position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 1000; width: max-content; padding: 6px 8px; border-radius: 6px; background: #1f2937; color: #fff; font-size: 12px; line-height: 1.4; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(2px); transition: opacity 60ms ease, transform 60ms ease; }
+    .online-only-text:hover::after { opacity: 1; visibility: visible; transform: translateY(0); }
     .spinner { display: none; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.5); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
     body.loading .spinner { display: inline-block; }
     body.loading #extractBtn { background: #0f766e; }
@@ -30,6 +37,10 @@
     <div id="currentSite" class="site warn">正在检查当前网站...</div>
     <button id="extractBtn"><span class="spinner"></span><span id="btnText">同步当前聊天记录</span></button>
     <button id="overviewBtn" class="secondary">查看记录总览</button>
+    <label id="onlineOnlyOption" class="online-only-option">
+      <input id="onlineOnlyCheckbox" type="checkbox" />
+      <span id="onlineOnlyText" class="online-only-text" data-tooltip="修改后需要刷新当前招聘页面才能生效">仅在线</span>
+    </label>
     <div id="error" class="error"></div>
   </div>
   <script src="src/runtime-config.js"></script>

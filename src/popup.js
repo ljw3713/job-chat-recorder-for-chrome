@@ -3,6 +3,10 @@ const btnText = document.getElementById('btnText');
 const errorBox = document.getElementById('error');
 const currentSiteBox = document.getElementById('currentSite');
 const overviewBtn = document.getElementById('overviewBtn');
+const onlineOnlyOption = document.getElementById('onlineOnlyOption');
+const onlineOnlyCheckbox = document.getElementById('onlineOnlyCheckbox');
+const onlineOnlyText = document.getElementById('onlineOnlyText');
+let activeTab = null;
 
 const SUPPORTED_SITES = [
   { key: 'boss', hostPattern: /(^|\.)zhipin\.com$/i, source: 'BOSS直聘' },
@@ -33,8 +37,21 @@ function setLoading(isLoading) {
   btnText.textContent = isLoading ? '正在同步，请稍候...' : '同步当前聊天记录';
 }
 
+function setOnlineOnlyAvailability(site, enabled = false) {
+  const available = site?.key === 'boss';
+  onlineOnlyCheckbox.disabled = !available;
+  onlineOnlyCheckbox.checked = available && Boolean(enabled);
+  onlineOnlyOption.classList.toggle('disabled', !available);
+  onlineOnlyText.dataset.tooltip = available
+    ? '修改后需要刷新当前招聘页面才能生效'
+    : site?.key === 'liepin'
+      ? '猎聘暂未支持仅在线过滤'
+      : '请先打开 BOSS直聘页面';
+}
+
 async function refreshCurrentSiteHint() {
   const tab = await getActiveTab();
+  activeTab = tab || null;
   const tabUrl = tab?.url || '';
   const site = detectSupportedSite(tabUrl);
   btn.disabled = false;
@@ -42,11 +59,45 @@ async function refreshCurrentSiteHint() {
   if (site) {
     currentSiteBox.textContent = `当前网站：${site.source}，可以提取。`;
     currentSiteBox.className = 'site ok';
+    if (site.key === 'boss') {
+      const response = await chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_ONLINE_ONLY_GET',
+        tabId: tab.id
+      });
+      setOnlineOnlyAvailability(site, response?.ok && response.enabled);
+    } else {
+      setOnlineOnlyAvailability(site, false);
+    }
   } else {
     currentSiteBox.textContent = `当前网站：暂不支持。目前支持 ${supportedSiteNames()}。`;
     currentSiteBox.className = 'site warn';
+    setOnlineOnlyAvailability(null, false);
   }
 }
+
+onlineOnlyCheckbox.addEventListener('change', async () => {
+  errorBox.textContent = '';
+  const enabled = onlineOnlyCheckbox.checked;
+  onlineOnlyCheckbox.disabled = true;
+  try {
+    const tab = activeTab || await getActiveTab();
+    if (!tab?.id || detectSupportedSite(tab.url || '')?.key !== 'boss') {
+      throw new Error('请先打开 BOSS直聘页面。');
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_ONLINE_ONLY_SET',
+      tabId: tab.id,
+      enabled
+    });
+    if (!response?.ok) throw new Error(response?.error || '无法保存仅在线设置。');
+    onlineOnlyCheckbox.checked = Boolean(response.enabled);
+  } catch (error) {
+    onlineOnlyCheckbox.checked = !enabled;
+    errorBox.textContent = error?.message || String(error);
+  } finally {
+    onlineOnlyCheckbox.disabled = false;
+  }
+});
 
 if (overviewBtn) {
   overviewBtn.addEventListener('click', async () => {

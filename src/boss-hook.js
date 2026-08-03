@@ -1,5 +1,5 @@
 (function () {
-  const hookVersion = '2026-07-28-page-request-v1';
+  const hookVersion = '2026-08-03-online-only-v2';
   if (window.__JOB_CHAT_BOSS_HOOK_VERSION__ === hookVersion) {
     try { window.postMessage({ source: 'job-chat-recorder-boss-hook', payload: { type: 'BOSS_HOOK_READY' } }, '*'); } catch (_) {}
     return;
@@ -18,6 +18,84 @@
       url.includes('/wapi/zprelation/friend/geekFilterByLabel') ||
       url.includes('/wapi/zprelation/friend/getGeekFriendList.json')
     );
+  }
+
+  function isRecommendedJobListTarget(url) {
+    try {
+      const parsed = new URL(String(url || ''), location.href);
+      return parsed.hostname === 'www.zhipin.com'
+        && parsed.pathname === '/wapi/zpgeek/pc/recommend/job/list.json';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  let onlineOnlyStateKnown = false;
+  let onlineOnlyEnabled = false;
+  const pendingOfflineJobIds = new Set();
+  let pendingOnlineOnlyBatch = null;
+
+  function onlineOnlyBatchFromResponse(payload) {
+    if (payload?.code !== 0 || !Array.isArray(payload?.zpData?.jobList)) return null;
+    const jobList = payload.zpData.jobList;
+    const encryptJobIds = jobList
+      .filter((job) => job?.bossOnline === false)
+      .map((job) => safeText(job?.encryptJobId).trim())
+      .filter(Boolean);
+    return {
+      encryptJobIds,
+      hasMore: payload.zpData.hasMore === true,
+      jobCount: jobList.length
+    };
+  }
+
+  function emitOnlineOnlyBatch(batch) {
+    if (!batch) return;
+    emit({
+      type: 'BOSS_ONLINE_ONLY_JOB_BATCH',
+      encryptJobIds: [...new Set(batch.encryptJobIds || [])].slice(0, 2000),
+      hasMore: batch.hasMore === true,
+      jobCount: Math.max(0, Number(batch.jobCount || 0))
+    });
+  }
+
+  function captureRecommendedJobList(payload) {
+    const batch = onlineOnlyBatchFromResponse(payload);
+    if (!batch) return;
+    if (!onlineOnlyStateKnown) {
+      batch.encryptJobIds.forEach((identifier) => pendingOfflineJobIds.add(identifier));
+      pendingOnlineOnlyBatch = {
+        encryptJobIds: [...pendingOfflineJobIds],
+        hasMore: batch.hasMore,
+        jobCount: batch.jobCount
+      };
+      return;
+    }
+    if (onlineOnlyEnabled) emitOnlineOnlyBatch(batch);
+  }
+
+  function setOnlineOnlyEnabled(nextEnabled) {
+    onlineOnlyStateKnown = true;
+    onlineOnlyEnabled = Boolean(nextEnabled);
+    if (onlineOnlyEnabled) emitOnlineOnlyBatch(pendingOnlineOnlyBatch);
+    pendingOfflineJobIds.clear();
+    pendingOnlineOnlyBatch = null;
+  }
+
+  function shouldInspectRecommendedJobList(url) {
+    return isRecommendedJobListTarget(url) && (!onlineOnlyStateKnown || onlineOnlyEnabled);
+  }
+
+  function inspectRecommendedJobListResponse(response, url) {
+    if (!shouldInspectRecommendedJobList(url)) return;
+    try {
+      response.clone().json().then(captureRecommendedJobList).catch(() => {});
+    } catch (_) {}
+  }
+
+  function reportRecommendedJobListRequest(url) {
+    if (!onlineOnlyEnabled || !isRecommendedJobListTarget(url)) return;
+    emit({ type: 'BOSS_ONLINE_ONLY_JOB_REQUEST_STARTED' });
   }
 
   let httpToken = '';
@@ -219,11 +297,16 @@
     window.fetch = async function (...args) {
       const input = args[0];
       const init = args[1] || {};
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : (input && input.url) || '';
       const method = (init.method || (input && input.method) || 'GET').toUpperCase();
       const body = init.body || '';
       rememberToken(tokenFromHeaders(init.headers) || tokenFromHeaders(input?.headers));
       rememberPcDeviceId(url, body);
+      reportRecommendedJobListRequest(url);
       const response = await originalFetch.apply(this, args);
       if (isTargetMethod(method, url)) {
         try {
@@ -234,6 +317,7 @@
           emit({ type: 'BOSS_GEEK_FRIEND_LIST_ERROR', url, method, body: safeText(body), error: String(error), capturedAt: new Date().toISOString() });
         }
       }
+      inspectRecommendedJobListResponse(response, url);
       return response;
     };
   }
@@ -249,6 +333,7 @@
   XMLHttpRequest.prototype.send = function (body) {
     const info = this.__jobChatRecorder || {};
     rememberPcDeviceId(info.url, body);
+    reportRecommendedJobListRequest(info.url);
     if (isTargetMethod(info.method, info.url)) {
       this.addEventListener('load', function () {
         try {
@@ -258,6 +343,16 @@
           emit({ type: 'BOSS_GEEK_FRIEND_LIST_ERROR', url: info.url, method: info.method, body: safeText(body), error: String(error), capturedAt: new Date().toISOString() });
         }
       });
+    }
+    if (shouldInspectRecommendedJobList(info.url)) {
+      this.addEventListener('load', function () {
+        try {
+          const data = this.responseType === 'json'
+            ? this.response
+            : JSON.parse(this.responseText || '{}');
+          captureRecommendedJobList(data);
+        } catch (_) {}
+      }, { once: true });
     }
     return originalSend.call(this, body);
   };
@@ -531,6 +626,10 @@
   window.addEventListener('message', async (event) => {
     if (event.source !== window || event.data?.source !== 'job-chat-recorder-boss-content') return;
     const command = event.data.command || {};
+    if (command.type === 'BOSS_ONLINE_ONLY_SET') {
+      setOnlineOnlyEnabled(command.enabled);
+      return;
+    }
     if (command.type === 'BOSS_PAGE_REQUEST_ABORT') {
       activePageRequests.get(command.requestId)?.abort();
       return;
