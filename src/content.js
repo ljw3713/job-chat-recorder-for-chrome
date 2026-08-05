@@ -38,7 +38,7 @@
         cleanup();
         window.postMessage({
           source: 'job-chat-recorder-boss-content',
-          command: { type: 'BOSS_PAGE_REQUEST_ABORT', requestId }
+          command: { type: 'BOSS_PAGE_REQUEST_ABORT_V3', requestId }
         }, '*');
         reject(error);
       };
@@ -61,7 +61,7 @@
       window.postMessage({
         source: 'job-chat-recorder-boss-content',
         command: {
-          type: 'BOSS_PAGE_REQUEST',
+          type: 'BOSS_PAGE_REQUEST_V3',
           requestId,
           url: String(url),
           method: String(init.method || 'GET'),
@@ -102,7 +102,7 @@
       if (payload.type === 'BOSS_GEEK_FRIEND_LIST') {
         chrome.storage.local.set({ jobChatBossFriendListCapture: payload });
       }
-      if (payload.type === 'BOSS_PAGE_REQUEST_RESULT') {
+      if (payload.type === 'BOSS_PAGE_REQUEST_RESULT_V3') {
         const waiter = bossPageRequestWaiters.get(payload.requestId);
         if (waiter) {
           bossPageRequestWaiters.delete(payload.requestId);

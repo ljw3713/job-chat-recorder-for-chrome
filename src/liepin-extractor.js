@@ -692,7 +692,7 @@
       headers: { Accept: 'text/html,application/xhtml+xml' }
     };
     await appendRequestLog({ siteKey: 'liepin', step: 'jobDetail:request', request });
-    options.onLog?.({ step: 'jobDetail:request', message: `GET ${url}` });
+    await options.onLog?.({ step: 'jobDetail:request', message: `GET ${url}`, request });
     let response;
     try {
       response = await fetch(url, { ...request, signal: options.signal });
@@ -703,21 +703,28 @@
         request,
         error: error?.message || String(error)
       });
+      await options.onLog?.({
+        step: 'jobDetail:networkError',
+        message: `GET ${url} 请求异常：${error?.message || String(error)}`,
+        request,
+        error: { name: error?.name, message: error?.message || String(error) }
+      });
       throw error;
     }
     const html = await response.text();
+    const responseRecord = {
+      status: response.status,
+      statusText: response.statusText,
+      url: response.url || url,
+      headers: responseHeaders(response),
+      body: html
+    };
     await appendRequestLog({
       siteKey: 'liepin',
       step: 'jobDetail:response',
-      response: {
-        status: response.status,
-        statusText: response.statusText,
-        url: response.url || url,
-        headers: responseHeaders(response),
-        body: html
-      }
+      response: responseRecord
     });
-    options.onLog?.({ step: 'jobDetail:response', message: `HTTP ${response.status} · ${response.url || url}` });
+    await options.onLog?.({ step: 'jobDetail:response', message: `HTTP ${response.status} · ${response.url || url}`, response: responseRecord });
     if (!response.ok) {
       throw liepinPageError(`猎聘岗位详情请求失败：HTTP ${response.status}`, 'detail_http_failed', {
         status: response.status,
@@ -1616,6 +1623,9 @@
     extract: extractLiepinChatRecords,
     prepare: prepareLiepinSync,
     refreshRecords: refreshLiepinRecords,
+    fetchJobDetail: fetchLiepinJobDetail,
+    normalizeJobResponse: normalizeLiepinJobResponse,
+    isRiskControlError: isLiepinJobRiskControlError,
     startSendBatch: startLiepinSendBatch,
     stopSendBatch: stopLiepinSendBatch
   };

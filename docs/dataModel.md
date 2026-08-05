@@ -795,6 +795,9 @@ jobChatPreparedSourceList
 | `jobChatRefreshProgress` | object | 总览页单条岗位详情更新进度 | 否 |
 | `jobChatBossSendProgress` | object | 批量发送单条进度 | 否 |
 | `jobChatLiepinImClientIds` | object | 按猎聘 `imId` 保存的 `imClientId` | 否 |
+| `jobChatAutoMessageConfig` | object | 自动打招呼配置及按站点保存的目标职位 | 否 |
+| `jobChatAutoGreetingRun` | object | 当前自动打招呼任务、进度和最近发送结果 | 否 |
+| `jobChatAutoGreetingHistory` | object | 防止自动打招呼重复发送的岗位历史账本 | 否 |
 
 `jobChatRefreshProgress` 的典型结构：
 
@@ -867,6 +870,9 @@ jobChatPreparedSourceList
 | `jobChatSendRates` | `{"boss":10,"liepin":10}` | 按站点保存的批量发送速率 |
 | `jobChatBossPcDeviceId` | string | BOSS 发送协议使用的本地设备 ID |
 | `jobChatLiepinImClientIds` | object | 按 `imId` 隔离的猎聘客户端 ID 缓存 |
+| `jobChatAutoMessageConfig` | object | 自动打招呼筛选、数量、速率、`nonHunterOnly` 及站点目标职位配置 |
+| `jobChatAutoGreetingRun` | object | 自动打招呼运行状态；完成后保留供状态面板展示 |
+| `jobChatAutoGreetingHistory` | object | BOSS 按岗位、猎聘按 `recruiterId + jobId` 保存防重状态 |
 | `jobChatRatingPromptState` | `{"clickCount":11,"promptedAt":"","action":"dismissed"}` | 同步按钮点击次数及一次性评分提示状态 |
 
 设置和设备 ID 不随记录导出。

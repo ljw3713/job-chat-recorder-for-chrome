@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>自动消息配置</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        min-height: 100%;
+      }
+      body {
+        margin: 0;
+        background: #fff;
+        color: #1f2937;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 60px;
+        padding: 16px 18px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .title {
+        margin: 0;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 28px;
+      }
+      .panel-mode-button {
+        width: auto;
+        flex: 0 0 auto;
+        border: 1px solid #d1d5db;
+        border-radius: 7px;
+        padding: 6px 10px;
+        background: #fff;
+        color: #374151;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .panel-mode-button:hover {
+        background: #f9fafb;
+      }
+      .content {
+        padding: 18px;
+      }
+      .range-separator {
+        color: #9ca3af;
+        font-size: 14px;
+      }
+      .config-view {
+        display: grid;
+        gap: 16px;
+        margin-top: 18px;
+      }
+      .config-list {
+        display: grid;
+        gap: 0;
+        margin: 0;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .config-row {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 12px;
+        padding: 11px 12px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .config-row.compact-row {
+        grid-template-columns: 112px minmax(0, 1fr) 68px minmax(0, 1fr);
+        column-gap: 12px;
+        row-gap: 8px;
+      }
+      .config-row.keyword-row {
+        grid-template-columns: 112px minmax(0, 1fr) 52px auto;
+      }
+      .config-row.condition-row {
+        /* Keep the second condition aligned with the value column used by
+           the following "打招呼数量" row in the wide panel layout. */
+        grid-template-columns: 232px minmax(0, 1fr);
+      }
+      .config-row:last-child {
+        border-bottom: 0;
+      }
+      .config-row:hover {
+        background: #f9fafb;
+      }
+      .config-row.quick-editing {
+        background: #f5f3ff;
+        box-shadow: inset 3px 0 #7c3aed;
+      }
+      .config-row dd.quick-editing {
+        background: #f5f3ff;
+        box-shadow: inset 3px 0 #7c3aed;
+      }
+      .config-row dt {
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 20px;
+      }
+      .config-row dd {
+        min-width: 0;
+        margin: 0;
+        color: #1f2937;
+        font-size: 13px;
+        line-height: 20px;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      .expect-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+      }
+      .expect-option {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: #374151;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .expect-option input {
+        margin: 0;
+        accent-color: #7c3aed;
+      }
+      .condition-option {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: #374151;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .condition-option input {
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: #7c3aed;
+      }
+      .condition-option input:disabled + span {
+        color: #9ca3af;
+      }
+      .quick-range {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 6px;
+      }
+      .quick-input,
+      .quick-textarea {
+        width: 100%;
+        border: 1px solid #a78bfa;
+        border-radius: 6px;
+        background: #fff;
+        color: #1f2937;
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      .quick-input {
+        min-width: 0;
+        padding: 6px 7px;
+      }
+      .quick-textarea {
+        min-height: 58px;
+        padding: 6px 7px;
+        line-height: 18px;
+        overflow-wrap: anywhere;
+        resize: vertical;
+        white-space: pre-wrap;
+      }
+      .quick-input:focus,
+      .quick-textarea:focus {
+        border-color: #7c3aed;
+        box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.12);
+      }
+      .quick-unit {
+        color: #6b7280;
+        font-size: 11px;
+      }
+      .view-actions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .greet-button {
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #7c3aed;
+        color: #fff;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .greet-button:hover {
+        background: #6d28d9;
+      }
+      .greet-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .greet-button.editing {
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
+      .secondary-button {
+        width: 100%;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+        color: #374151;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .secondary-button:hover {
+        background: #f9fafb;
+      }
+      .status {
+        margin: 12px 0 0;
+        color: #047857;
+        font-size: 12px;
+        line-height: 18px;
+        text-align: center;
+      }
+      .status:empty {
+        display: none;
+      }
+      .status.error {
+        color: #b91c1c;
+      }
+      .run-view {
+        display: grid;
+        gap: 16px;
+        margin-top: 18px;
+      }
+      .run-card {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 9px;
+        background: #fafafa;
+      }
+      .run-summary {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: #374151;
+        font-size: 13px;
+      }
+      .progress-track {
+        height: 9px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e5e7eb;
+      }
+      .progress-bar {
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: #7c3aed;
+        transition: width 180ms ease;
+      }
+      .run-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        color: #6b7280;
+        font-size: 12px;
+      }
+      .run-current {
+        min-height: 20px;
+        color: #374151;
+        font-size: 13px;
+        line-height: 20px;
+        overflow-wrap: anywhere;
+      }
+      .sent-messages {
+        border: 1px solid #e5e7eb;
+        border-radius: 9px;
+        overflow: hidden;
+        background: #fff;
+      }
+      .sent-messages-header {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e5e7eb;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .sent-messages-list {
+        /* Eight message rows (20px content + 28px vertical padding + border). */
+        max-height: 392px;
+        overflow-y: auto;
+      }
+      .sent-message {
+        padding: 14px 12px;
+        border-bottom: 1px solid #f0f1f3;
+      }
+      .sent-message:last-child {
+        border-bottom: 0;
+      }
+      .sent-message-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+      }
+      .sent-message-company,
+      .sent-message-job {
+        /* Grid items otherwise stretch to fill their column, making blank cell
+           space trigger the hover card. */
+        justify-self: start;
+        max-width: 100%;
+        overflow: hidden;
+        color: #1f2937;
+        font-size: 13px;
+        line-height: 20px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sent-message-company {
+        color: #4f46e5;
+      }
+      .sent-message-salary {
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 20px;
+        white-space: nowrap;
+      }
+      .sent-message-empty {
+        padding: 14px 12px;
+        color: #9ca3af;
+        font-size: 12px;
+        text-align: center;
+      }
+      .job-info-card {
+        position: fixed;
+        display: none;
+        z-index: 60;
+        width: min(430px, calc(100vw - 24px));
+        max-height: min(420px, calc(100vh - 24px));
+        overflow: auto;
+        box-sizing: border-box;
+        padding: 14px;
+        border-radius: 10px;
+        background: #111827;
+        color: #f9fafb;
+        box-shadow: 0 16px 36px rgba(17, 24, 39, 0.3);
+        font-size: 13px;
+        line-height: 1.55;
+        pointer-events: auto;
+      }
+      .job-info-card.show {
+        display: block;
+      }
+      .job-info-card h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .job-info-card .keywords {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0 0 10px;
+      }
+      .job-info-card .keyword {
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: #134e4a;
+        color: #ccfbf1;
+        font-size: 12px;
+      }
+      .job-info-card .detail {
+        margin: 0;
+        color: #e5e7eb;
+        white-space: pre-wrap;
+      }
+      .job-info-card .job-info-meta {
+        margin-top: 10px;
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      .run-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .cancel-button {
+        width: 100%;
+        border: 1px solid #ef4444;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+        color: #dc2626;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .cancel-button:hover {
+        background: #fef2f2;
+      }
+      .cancel-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .debug-panel {
+        margin-top: 18px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #111827;
+      }
+      .debug-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border-bottom: 1px solid #374151;
+        color: #e5e7eb;
+        font-size: 12px;
+      }
+      .debug-clear {
+        width: auto;
+        border: 1px solid #4b5563;
+        border-radius: 5px;
+        padding: 3px 8px;
+        background: transparent;
+        color: #d1d5db;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .debug-log {
+        min-height: 120px;
+        max-height: 320px;
+        margin: 0;
+        padding: 10px;
+        overflow: auto;
+        color: #a7f3d0;
+        font:
+          11px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Monaco,
+          Consolas,
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        outline: none;
+      }
+      .debug-log:focus {
+        box-shadow: inset 0 0 0 2px #10b981;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="header">
+      <h1 class="title">自动消息配置</h1>
+      <button id="panelModeButton" class="panel-mode-button" type="button">
+        浮动
+      </button>
+    </header>
+    <main class="content">
+      <section id="configView" class="config-view" hidden>
+        <dl class="config-list">
+          <div id="viewTargetExpectRow" class="config-row" hidden>
+            <dt>目标职位</dt>
+            <dd id="viewTargetExpectChoices" class="expect-options">
+              正在读取…
+            </dd>
+          </div>
+          <div class="config-row compact-row">
+            <dt>工资范围</dt>
+            <dd id="viewSalary" data-edit-key="salary" title="双击快速编辑">
+              未设置
+            </dd>
+            <dt>年限范围</dt>
+            <dd
+              id="viewExperience"
+              data-edit-key="experience"
+              title="双击快速编辑"
+            >
+              未设置
+            </dd>
+          </div>
+          <div class="config-row compact-row keyword-row">
+            <dt>技术关键字</dt>
+            <dd
+              id="viewTechnicalKeywords"
+              data-edit-key="technicalKeywords"
+              title="双击快速编辑"
+            >
+              未设置
+            </dd>
+            <dt>匹配度</dt>
+            <dd
+              id="viewTechnicalMatchPercent"
+              data-edit-key="technicalMatchPercent"
+              title="双击快速编辑"
+            >
+              50%
+            </dd>
+          </div>
+          <div class="config-row compact-row keyword-row">
+            <dt>职位关键字</dt>
+            <dd
+              id="viewJobKeywords"
+              data-edit-key="jobKeywords"
+              title="双击快速编辑"
+            >
+              未设置
+            </dd>
+            <dt>匹配度</dt>
+            <dd
+              id="viewJobMatchPercent"
+              data-edit-key="jobMatchPercent"
+              title="双击快速编辑"
+            >
+              50%
+            </dd>
+          </div>
+          <div
+            class="config-row"
+            data-edit-key="jobFilterKeywords"
+            title="双击快速编辑"
+          >
+            <dt>岗位关键字过滤器</dt>
+            <dd id="viewJobFilterKeywords">未设置</dd>
+          </div>
+          <div
+            class="config-row"
+            data-edit-key="companyFilterKeywords"
+            title="双击快速编辑"
+          >
+            <dt>公司关键字过滤器</dt>
+            <dd id="viewCompanyFilterKeywords">未设置</dd>
+          </div>
+          <div class="config-row condition-row">
+            <label class="condition-option">
+              <input id="onlineOnly" type="checkbox" />
+              <span>仅在线</span>
+            </label>
+            <label class="condition-option">
+              <input id="nonHunterOnly" type="checkbox" />
+              <span>非猎头</span>
+            </label>
+          </div>
+          <div class="config-row">
+            <dt>打招呼数量</dt>
+            <dd id="viewGreetingCount" data-edit-key="greetingCount" title="双击快速编辑">10 人</dd>
+          </div>
+          <div
+            class="config-row"
+            data-edit-key="requestRatePerMinute"
+            title="双击快速编辑"
+          >
+            <dt>请求速率</dt>
+            <dd id="viewRequestRatePerMinute">25 次/分钟</dd>
+          </div>
+        </dl>
+        <div id="configActions" class="view-actions">
+          <button id="greetButton" class="greet-button" type="button">
+            一键打招呼
+          </button>
+        </div>
+      </section>
+      <section id="runView" class="run-view" hidden>
+        <div class="run-card">
+          <div class="run-summary">
+            <strong id="runState">正在运行</strong
+            ><span id="runTarget">目标 0 条</span>
+          </div>
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-label="自动打招呼进度"
+          >
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <div class="run-stats">
+            <span>成功：<strong id="runSucceeded">0</strong></span
+            ><span>已处理：<strong id="runProcessed">0</strong></span>
+            <span>跳过：<strong id="runSkipped">0</strong></span
+            ><span>失败：<strong id="runFailed">0</strong></span>
+          </div>
+          <div id="runCurrent" class="run-current"></div>
+        </div>
+        <section id="sentMessagesPanel" class="sent-messages">
+          <div class="sent-messages-header">已发送信息 <span id="sentMessagesDate"></span></div>
+          <div id="sentMessagesList" class="sent-messages-list"></div>
+        </section>
+        <div id="runActions" class="run-actions">
+          <button
+            id="cancelRunButton"
+            class="cancel-button"
+            type="button"
+            hidden
+          >
+            取消任务
+          </button>
+          <button id="runControlButton" class="greet-button" type="button">
+            暂停
+          </button>
+        </div>
+        <button
+          id="backToConfigButton"
+          class="secondary-button"
+          type="button"
+          hidden
+        >
+          关闭状态面板
+        </button>
+      </section>
+      <section id="debugPanel" class="debug-panel" hidden>
+        <div class="debug-header">
+          <span>自动消息日志</span
+          ><button id="clearDebugLogButton" class="debug-clear" type="button">
+            清空
+          </button>
+        </div>
+        <pre
+          id="debugLog"
+          class="debug-log"
+          tabindex="0"
+          aria-label="自动消息日志，按 Ctrl+A 或 Command+A 全选"
+          title="点击聚焦，按 Ctrl+A 或 Command+A 全选日志"
+        >
+暂无日志</pre
+        >
+      </section>
+      <div
+        id="sentMessageInfoCard"
+        class="job-info-card"
+        role="dialog"
+        tabindex="-1"
+      ></div>
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script src="src/auto-message-panel.js"></script>
+  </body>
+</html>

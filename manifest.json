@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "直聘|猎聘 沟通助手-dev",
   "version": "6.0.0",
   "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
@@ -8,6 +9,8 @@
     "scripting",
     "storage",
     "unlimitedStorage",
+    "sidePanel",
+    "windows",
     "tabs"
   ],
   "host_permissions": [
@@ -63,7 +66,9 @@
         "src/job-sync-core.js",
         "src/boss-extractor.js",
         "src/liepin-extractor.js",
-        "src/content.js"
+        "src/content.js",
+        "src/boss-auto-greeting.js",
+        "src/liepin-auto-greeting.js"
       ],
       "run_at": "document_start"
     }

@@ -1,5 +1,5 @@
 (function () {
-  const hookVersion = '2026-08-03-online-only-v2';
+  const hookVersion = '2026-08-04-auto-greeting-v4';
   if (window.__JOB_CHAT_BOSS_HOOK_VERSION__ === hookVersion) {
     try { window.postMessage({ source: 'job-chat-recorder-boss-hook', payload: { type: 'BOSS_HOOK_READY' } }, '*'); } catch (_) {}
     return;
@@ -34,6 +34,7 @@
   let onlineOnlyEnabled = false;
   const pendingOfflineJobIds = new Set();
   let pendingOnlineOnlyBatch = null;
+  let latestRecommendedJobListUrl = '';
 
   function onlineOnlyBatchFromResponse(payload) {
     if (payload?.code !== 0 || !Array.isArray(payload?.zpData?.jobList)) return null;
@@ -94,8 +95,13 @@
   }
 
   function reportRecommendedJobListRequest(url) {
-    if (!onlineOnlyEnabled || !isRecommendedJobListTarget(url)) return;
-    emit({ type: 'BOSS_ONLINE_ONLY_JOB_REQUEST_STARTED' });
+    if (!isRecommendedJobListTarget(url)) return;
+    try {
+      latestRecommendedJobListUrl = new URL(String(url || ''), location.href).href;
+    } catch (_) {
+      return;
+    }
+    if (onlineOnlyEnabled) emit({ type: 'BOSS_ONLINE_ONLY_JOB_REQUEST_STARTED' });
   }
 
   let httpToken = '';
@@ -398,8 +404,11 @@
     const parsedUrl = new URL(command.url, location.origin);
     if (parsedUrl.origin !== location.origin) throw new Error('只允许请求当前 BOSS 站点。');
     const allowedPaths = new Set([
+      '/wapi/zpgeek/pc/recommend/job/list.json',
+      '/wapi/zpgeek/pc/recommend/expect/list.json',
       '/wapi/zpgeek/job/detail.json',
-      '/wapi/zpchat/geek/historyMsg'
+      '/wapi/zpchat/geek/historyMsg',
+      '/wapi/zpgeek/friend/add.json'
     ]);
     if (!allowedPaths.has(parsedUrl.pathname)) throw new Error('不允许的 BOSS 页面请求。');
 
@@ -630,17 +639,21 @@
       setOnlineOnlyEnabled(command.enabled);
       return;
     }
-    if (command.type === 'BOSS_PAGE_REQUEST_ABORT') {
+    if (command.type === 'BOSS_AUTO_GREETING_SOURCE_GET') {
+      emit({ type: 'BOSS_AUTO_GREETING_SOURCE', requestUrl: latestRecommendedJobListUrl });
+      return;
+    }
+    if (command.type === 'BOSS_PAGE_REQUEST_ABORT_V3') {
       activePageRequests.get(command.requestId)?.abort();
       return;
     }
-    if (command.type === 'BOSS_PAGE_REQUEST') {
+    if (command.type === 'BOSS_PAGE_REQUEST_V3') {
       try {
         const result = await performPageRequest(command);
-        emit({ type: 'BOSS_PAGE_REQUEST_RESULT', requestId: command.requestId, ok: true, result });
+        emit({ type: 'BOSS_PAGE_REQUEST_RESULT_V3', requestId: command.requestId, ok: true, result });
       } catch (error) {
         emit({
-          type: 'BOSS_PAGE_REQUEST_RESULT',
+          type: 'BOSS_PAGE_REQUEST_RESULT_V3',
           requestId: command.requestId,
           ok: false,
           errorName: error?.name || 'Error',

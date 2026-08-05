@@ -1700,7 +1700,8 @@
     extract: extractBossChatRecords,
     prepare: prepareBossSync,
     prepareSendTargets: prepareBossSendTargets,
-    refreshRecords: refreshBossRecords
+    refreshRecords: refreshBossRecords,
+    normalizeJobResponse: normalizeBossJobResponse
   };
   globalThis.JobChatSiteAdapters?.register('boss', {
     siteKey: 'boss', supportsJobDetail: true, requiresDetailAccessToken: true, prepareSync: prepareBossSync,

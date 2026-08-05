@@ -41,6 +41,7 @@ function checkJavaScriptSyntax() {
 function manifestReferences(manifest) {
   const files = new Set();
   if (manifest.background?.service_worker) files.add(manifest.background.service_worker);
+  if (manifest.side_panel?.default_path) files.add(manifest.side_panel.default_path);
   for (const definition of manifest.content_scripts || []) {
     for (const file of definition.js || []) files.add(file);
   }
@@ -77,7 +78,9 @@ function packageFileReferences() {
 function main() {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const referencedFiles = manifestReferences(manifest);
-  for (const htmlFile of ['popup.html', 'results.html']) {
+  const htmlFiles = new Set(['popup.html', 'results.html', 'auto-message-panel.html']);
+  if (manifest.side_panel?.default_path) htmlFiles.add(manifest.side_panel.default_path);
+  for (const htmlFile of htmlFiles) {
     assertFile(htmlFile, 'CI');
     for (const scriptFile of htmlScriptReferences(htmlFile)) referencedFiles.add(scriptFile);
   }

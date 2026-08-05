@@ -403,6 +403,10 @@ Accept: text/html,application/xhtml+xml
 - 空标签数组是合法结果。
 - 上线完整关键词解析前需要一个关键词非空的 HR 或猎头详情样本。
 
+这里的 `skills` 仅用于岗位资料保存。推荐岗位自动打招呼的技术关键字、职位关键字和岗位
+关键字过滤器均不读取 `skills`、详情标题或公司简介，只检索
+`.job-intro-container [data-selector="job-intro-content"]` 解析得到的 `jobInfo.description`。
+
 ## 10. 数据映射
 
 ### 10.1 通用岗位

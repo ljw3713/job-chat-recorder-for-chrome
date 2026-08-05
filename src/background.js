@@ -66,7 +66,9 @@ const CONTENT_SCRIPT_FILES = [
   'src/job-sync-core.js',
   'src/boss-extractor.js',
   'src/liepin-extractor.js',
-  'src/content.js'
+  'src/content.js',
+  'src/boss-auto-greeting.js',
+  'src/liepin-auto-greeting.js'
 ];
 let activeBossSendTabId = null;
 let activeLiepinSendTabId = null;
@@ -81,6 +83,531 @@ const ONLINE_ONLY_TABS_STORAGE_KEY = 'jobChatOnlineOnlyTabs';
 const COMPANY_FILTER_TABS_STORAGE_KEY = 'jobChatCompanyFilterTabs';
 const COMPANY_FILTER_KEYWORDS_STORAGE_KEY = 'jobChatCompanyFilterKeywords';
 let companyFilterKeywordsSaveQueue = Promise.resolve();
+const AUTO_GREETING_RUN_STORAGE_KEY = 'jobChatAutoGreetingRun';
+const AUTO_GREETING_HISTORY_STORAGE_KEY = 'jobChatAutoGreetingHistory';
+const AUTO_GREETING_LOG_TABS_STORAGE_KEY = 'jobChatAutoGreetingLogTabs';
+const AUTO_GREETING_LOGS_STORAGE_KEY = 'jobChatAutoGreetingLogsByTab';
+let autoGreetingSaveQueue = Promise.resolve();
+let autoGreetingLogQueue = Promise.resolve();
+let autoGreetingRiskQueue = Promise.resolve();
+const AUTO_GREETING_BACKGROUND_SESSION_ID = crypto.randomUUID();
+
+function autoGreetingPanelPath(debug = false, floatingTabId = 0) {
+  const params = new URLSearchParams();
+  if (floatingTabId) {
+    params.set('mode', 'floating');
+    params.set('tabId', String(floatingTabId));
+  }
+  if (debug) params.set('debug', '1');
+  const query = params.toString();
+  return `auto-message-panel.html${query ? `?${query}` : ''}`;
+}
+
+async function findAutoGreetingFloatingWindow(tabId) {
+  const expected = chrome.runtime.getURL(autoGreetingPanelPath(false, tabId)).replace('?debug=1', '');
+  const windows = await chrome.windows.getAll({ populate: true });
+  return windows.find((windowInfo) => windowInfo.type === 'popup' && windowInfo.tabs?.some((tab) => {
+    const url = String(tab.url || '');
+    return url.startsWith(expected) && new URL(url).searchParams.get('mode') === 'floating';
+  })) || null;
+}
+
+async function floatAutoGreetingPanel(tabId, debug) {
+  const existing = await findAutoGreetingFloatingWindow(tabId);
+  if (existing?.id) {
+    await chrome.windows.update(existing.id, { focused: true });
+    return existing;
+  }
+  const floating = await chrome.windows.create({
+    url: chrome.runtime.getURL(autoGreetingPanelPath(Boolean(debug), tabId)),
+    type: 'popup',
+    width: 460,
+    height: 760,
+    focused: true
+  });
+  if (chrome.sidePanel?.setOptions) {
+    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {});
+  }
+  return floating;
+}
+
+async function dockAutoGreetingPanel(tabId, windowId, debug) {
+  if (!Number.isInteger(Number(windowId)) || Number(windowId) <= 0) throw new Error('浮动窗口无效。');
+  if (chrome.sidePanel?.setOptions) {
+    await chrome.sidePanel.setOptions({ tabId, path: autoGreetingPanelPath(Boolean(debug)), enabled: true });
+  }
+  await chrome.windows.remove(Number(windowId));
+}
+
+function redactAutoGreetingLog(value) {
+  return String(value || '')
+    .replace(/\b(securityId|lid|token|cookie|authorization)=([^&\s]+)/gi, '$1=[已隐藏]')
+    .replace(/\b[A-Za-z0-9_~-]{80,}\b/g, '[长标识已隐藏]');
+}
+
+async function setAutoGreetingLogEnabled(tabId, enabled) {
+  const store = await chrome.storage.session.get([AUTO_GREETING_LOG_TABS_STORAGE_KEY]);
+  const tabs = store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] && typeof store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] === 'object'
+    ? store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] : {};
+  if (enabled) tabs[String(tabId)] = true;
+  else delete tabs[String(tabId)];
+  await chrome.storage.session.set({ [AUTO_GREETING_LOG_TABS_STORAGE_KEY]: tabs });
+}
+
+async function appendAutoGreetingLog(tabId, message, options = {}) {
+  if (!Number.isInteger(Number(tabId)) || Number(tabId) <= 0) return;
+  autoGreetingLogQueue = autoGreetingLogQueue.catch(() => {}).then(async () => {
+    const store = await chrome.storage.session.get([AUTO_GREETING_LOG_TABS_STORAGE_KEY, AUTO_GREETING_LOGS_STORAGE_KEY]);
+    const enabledTabs = store[AUTO_GREETING_LOG_TABS_STORAGE_KEY];
+    if (!enabledTabs || enabledTabs[String(tabId)] !== true) return;
+    const logsByTab = store[AUTO_GREETING_LOGS_STORAGE_KEY] && typeof store[AUTO_GREETING_LOGS_STORAGE_KEY] === 'object'
+      ? store[AUTO_GREETING_LOGS_STORAGE_KEY] : {};
+    const entries = Array.isArray(logsByTab[String(tabId)]) ? logsByTab[String(tabId)] : [];
+    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    logsByTab[String(tabId)] = [...entries, {
+      time,
+      message: options.raw === true ? String(message || '') : redactAutoGreetingLog(message)
+    }].slice(-300);
+    await chrome.storage.session.set({ [AUTO_GREETING_LOGS_STORAGE_KEY]: logsByTab });
+  });
+  return autoGreetingLogQueue;
+}
+
+async function clearAutoGreetingLog(tabId) {
+  const store = await chrome.storage.session.get([AUTO_GREETING_LOGS_STORAGE_KEY]);
+  const logsByTab = store[AUTO_GREETING_LOGS_STORAGE_KEY] && typeof store[AUTO_GREETING_LOGS_STORAGE_KEY] === 'object'
+    ? store[AUTO_GREETING_LOGS_STORAGE_KEY] : {};
+  delete logsByTab[String(tabId)];
+  await chrome.storage.session.set({ [AUTO_GREETING_LOGS_STORAGE_KEY]: logsByTab });
+}
+
+function autoGreetingJobId(record) {
+  return String(record?.jobRef?.externalId || record?.boss?.jobId || '').trim().toLowerCase();
+}
+
+function autoGreetingHistoryKey(message) {
+  const siteKey = String(message.siteKey || 'boss').trim().toLowerCase();
+  const jobId = String(message.jobId || '').trim().toLowerCase();
+  if (siteKey !== 'liepin') return jobId;
+  const recruiterId = String(message.recruiterId || '').trim().toLowerCase();
+  const candidateKey = String(message.candidateKey || `${recruiterId}|${jobId}`).trim().toLowerCase();
+  return candidateKey.startsWith('liepin|') ? candidateKey : `liepin|${candidateKey}`;
+}
+
+function recordMatchesAutoGreeting(record, siteKey, jobId, recruiterId) {
+  const recordSite = String(record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : 'boss')).toLowerCase();
+  if (siteKey !== 'liepin') return recordSite !== 'liepin' && autoGreetingJobId(record) === jobId;
+  const recordRecruiterId = String(
+    record?.liepin?.recruiterId
+    || record?.liepin?.oppositeUserId
+    || ''
+  ).trim().toLowerCase();
+  return recordSite === 'liepin'
+    && autoGreetingJobId(record) === jobId
+    && Boolean(recruiterId)
+    && recordRecruiterId === recruiterId;
+}
+
+async function ensureAutoGreetingContent(tabId) {
+  let status = await sendMessageToTab(tabId, { type: 'JOB_CHAT_AUTO_GREETING_STATUS' });
+  if (status?.ok) return status;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_SCRIPT_FILES });
+  } catch (error) {
+    throw new Error(`无法连接招聘页面，请刷新页面后重试：${error?.message || String(error)}`);
+  }
+  status = await sendMessageToTab(tabId, { type: 'JOB_CHAT_AUTO_GREETING_STATUS' });
+  if (!status?.ok) throw new Error('自动打招呼脚本未能连接当前页面，请刷新招聘页面后重试。');
+  return status;
+}
+
+async function reconcileAutoGreetingRun(tabId) {
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (!run || Number(run.tabId) !== Number(tabId)) return null;
+  if (run.riskRetryPaused) return run;
+  if (run.status === 'refreshing') return run;
+  if (!['running', 'paused', 'cancelling'].includes(run.status)) return run;
+  const taskStatus = await sendMessageToTab(run.tabId, { type: 'JOB_CHAT_AUTO_GREETING_STATUS' });
+  if (taskStatus?.active && taskStatus.runId === run.runId) return run;
+  const interrupted = {
+    ...run,
+    status: 'failed',
+    currentJobName: '',
+    statusText: '页面中的自动打招呼任务已结束，请重新启动。',
+    updatedAt: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: interrupted });
+  return interrupted;
+}
+
+async function startAutoGreeting(message) {
+  const tabId = Number(message.tabId || 0);
+  if (!Number.isInteger(tabId) || tabId <= 0) throw new Error('没有找到当前标签页。');
+  const tab = await chrome.tabs.get(tabId);
+  let tabUrl;
+  try { tabUrl = new URL(tab?.url || ''); } catch (_) { tabUrl = null; }
+  const site = tabUrl && /(^|\.)zhipin\.com$/i.test(tabUrl.hostname)
+    ? 'boss'
+    : (tabUrl && /(^|\.)liepin\.com$/i.test(tabUrl.hostname) ? 'liepin' : '');
+  if (!site) {
+    throw new Error('请在已登录的 BOSS直聘或猎聘页面启动自动打招呼。');
+  }
+  const contentStatus = await ensureAutoGreetingContent(tabId);
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  let current = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (current?.siteKey !== 'liepin' && current?.status === 'refreshing'
+    && current.riskRecoverySessionId !== AUTO_GREETING_BACKGROUND_SESSION_ID) {
+    const stale = {
+      ...current,
+      status: 'failed',
+      currentJobName: '',
+      statusText: '上次环境异常重试因扩展重新加载而结束，请重新启动。',
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: stale });
+    current = null;
+  }
+  if (current && ['running', 'paused', 'cancelling', 'refreshing'].includes(current.status)) {
+    if (current.status === 'refreshing') throw new Error('环境异常刷新重试正在进行，请稍候。');
+    let taskStatus = Number(current.tabId) === tabId ? contentStatus : null;
+    if (!taskStatus) {
+      try { taskStatus = await sendMessageToTab(current.tabId, { type: 'JOB_CHAT_AUTO_GREETING_STATUS' }); } catch (_) {}
+    }
+    if (taskStatus?.active && taskStatus.runId === current.runId) throw new Error('已有自动打招呼任务正在运行。');
+    await chrome.storage.local.set({
+      [AUTO_GREETING_RUN_STORAGE_KEY]: { ...current, status: 'failed', statusText: '原任务页面已刷新或关闭，任务已结束。', updatedAt: new Date().toISOString() }
+    });
+  }
+  const runId = crypto.randomUUID();
+  const startedAt = new Date().toISOString();
+  const run = {
+    runId, tabId, siteKey: site, status: 'running', config: message.config || {},
+    processed: 0, succeeded: 0, skipped: 0, failed: 0, totalDiscovered: 0,
+    currentJobName: '', statusText: '正在启动', startedAt,
+    deadlineAt: Date.now() + 30 * 60 * 1000,
+    updatedAt: startedAt
+  };
+  await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: run });
+  await appendAutoGreetingLog(tabId, `启动任务：目标 ${Number(run.config.greetingCount || 0)} 条，请求速率 ${Number(run.config.requestRatePerMinute || 25)} 次/分钟，并发 1`);
+  const response = await sendMessageToTab(tabId, {
+    type: 'JOB_CHAT_AUTO_GREETING_START', runId, config: run.config,
+    deadlineAt: run.deadlineAt,
+    onlineOnly: await onlineOnlyState(tabId)
+  });
+  if (!response?.ok) {
+    const failed = { ...run, status: 'failed', statusText: response?.error || '无法启动自动打招呼任务。', updatedAt: new Date().toISOString() };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: failed });
+    await appendAutoGreetingLog(tabId, `启动失败：${failed.statusText}`);
+    throw new Error(failed.statusText);
+  }
+  const startedRun = { ...run, recommendedListUrl: String(response.recommendedListUrl || '') };
+  await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: startedRun });
+  return { ok: true, run: startedRun };
+}
+
+async function controlAutoGreeting(message, action) {
+  const requestedTabId = Number(message.tabId || 0);
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  const storedRun = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  // A code=37 retry is managed by the background worker while the page is
+  // waiting to reload.  Do not require the panel's current tab lookup here:
+  // the panel can be floating or its active-tab query can temporarily be empty.
+  const run = action === 'pause' && storedRun?.status === 'refreshing'
+    ? storedRun
+    : await reconcileAutoGreetingRun(requestedTabId || storedRun?.tabId);
+  if (action === 'pause' && run?.status === 'refreshing') {
+    const paused = {
+      ...run,
+      status: 'paused',
+      riskControlCount: 0,
+      riskRecoverySessionId: '',
+      riskRetryPaused: true,
+      statusText: '环境异常重试已暂停，重试次数已重置。',
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: paused });
+    await appendAutoGreetingLog(run.tabId, paused.statusText);
+    return { ok: true };
+  }
+  if (action === 'resume' && run?.status === 'paused' && run.riskRetryPaused) {
+    const resumed = {
+      ...run,
+      status: 'running',
+      riskRetryPaused: false,
+      statusText: '继续处理推荐岗位，环境异常重试次数已重置。',
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: resumed });
+    await ensureAutoGreetingContent(run.tabId);
+    const response = await sendMessageToTab(run.tabId, {
+      type: 'JOB_CHAT_AUTO_GREETING_START',
+      runId: run.runId,
+      config: run.config || {},
+      recommendedListUrl: run.recommendedListUrl,
+      deadlineAt: run.deadlineAt,
+      onlineOnly: await onlineOnlyState(run.tabId),
+      initialProgress: {
+        processed: Number(run.processed || 0),
+        succeeded: Number(run.succeeded || 0),
+        skipped: Number(run.skipped || 0),
+        failed: Number(run.failed || 0),
+        totalDiscovered: Number(run.totalDiscovered || 0)
+      }
+    });
+    if (!response?.ok) {
+      await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: { ...resumed, status: 'failed', statusText: response?.error || '无法继续环境异常重试。', updatedAt: new Date().toISOString() } });
+      throw new Error(response?.error || '无法继续环境异常重试。');
+    }
+    return { ok: true };
+  }
+  const allowed = action === 'cancel'
+    ? run?.status === 'paused'
+    : ['running', 'paused'].includes(run?.status);
+  if (!run?.tabId || !allowed) {
+    throw new Error(action === 'cancel' ? '请先暂停任务再取消。' : '当前没有可控制的自动打招呼任务。');
+  }
+  const response = await sendMessageToTab(run.tabId, { type: `JOB_CHAT_AUTO_GREETING_${action.toUpperCase()}` });
+  if (!response?.ok) throw new Error(response?.error || `无法${action === 'pause' ? '暂停' : (action === 'cancel' ? '取消' : '继续')}任务。`);
+  return { ok: true };
+}
+
+async function handleAutoGreetingRiskControl(message, sender) {
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (!run || run.runId !== message.runId || Number(run.tabId) !== Number(sender.tab?.id)) return;
+  const recommendedListUrl = String(message.recommendedListUrl || run.recommendedListUrl || '');
+  const riskControlCount = Number(run.riskControlCount || 0) + 1;
+  if (riskControlCount > 3) {
+    const stopped = {
+      ...run,
+      riskControlCount,
+      status: 'failed',
+      currentJobName: '',
+      statusText: '环境异常（code=37）连续重试已超过 3 次，自动打招呼已停止。',
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: stopped });
+    await appendAutoGreetingLog(run.tabId, stopped.statusText);
+    return;
+  }
+  const retryDelaySeconds = [10, 30, 60][riskControlCount - 1];
+
+  const refreshing = {
+    ...run,
+    recommendedListUrl,
+    riskControlCount,
+    riskRecoverySessionId: AUTO_GREETING_BACKGROUND_SESSION_ID,
+    status: 'refreshing',
+    statusText: `环境异常第 ${riskControlCount} 次，等待 ${retryDelaySeconds} 秒后刷新页面重试。`,
+    updatedAt: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: refreshing });
+  await appendAutoGreetingLog(run.tabId, `${refreshing.statusText} 异常阶段：${String(message.phase || '未知')}`);
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, retryDelaySeconds * 1000));
+    const waitingStore = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+    const waitingRun = waitingStore[AUTO_GREETING_RUN_STORAGE_KEY];
+    if (!waitingRun || waitingRun.runId !== run.runId || waitingRun.status !== 'refreshing') return;
+    await reloadTabAndWait(run.tabId, 30000);
+    await ensureAutoGreetingContent(run.tabId);
+    const latestStore = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+    const latest = latestStore[AUTO_GREETING_RUN_STORAGE_KEY];
+    if (!latest || latest.runId !== run.runId || latest.status !== 'refreshing') return;
+    const resumed = {
+      ...latest,
+      status: 'running',
+      riskRecoverySessionId: '',
+      currentJobName: '',
+      statusText: `页面刷新完成，正在进行第 ${riskControlCount} 次重试。`,
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: resumed });
+    const response = await sendMessageToTab(run.tabId, {
+      type: 'JOB_CHAT_AUTO_GREETING_START',
+      runId: run.runId,
+      config: run.config || {},
+      recommendedListUrl: resumed.recommendedListUrl,
+      deadlineAt: resumed.deadlineAt,
+      onlineOnly: await onlineOnlyState(run.tabId),
+      initialProgress: {
+        processed: Number(resumed.processed || 0),
+        succeeded: Number(resumed.succeeded || 0),
+        skipped: Number(resumed.skipped || 0),
+        failed: Number(resumed.failed || 0),
+        totalDiscovered: Number(resumed.totalDiscovered || 0)
+      }
+    });
+    if (!response?.ok) throw new Error(response?.error || '刷新后无法重新启动自动打招呼任务。');
+    await appendAutoGreetingLog(run.tabId, resumed.statusText);
+  } catch (error) {
+    const failedStore = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+    const current = failedStore[AUTO_GREETING_RUN_STORAGE_KEY];
+    // A user may pause during the retry delay or while the tab is reloading.
+    // Keep that explicit pause instead of replacing it with a refresh failure.
+    if (!current || current.runId !== run.runId || current.status !== 'refreshing') return;
+    const failed = {
+      ...current,
+      status: 'failed',
+      currentJobName: '',
+      statusText: `环境异常后刷新重试失败：${error?.message || String(error)}`,
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: failed });
+    await appendAutoGreetingLog(run.tabId, failed.statusText);
+  }
+}
+
+async function resetAutoGreetingRiskControl(message, sender) {
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (!run || run.runId !== message.runId || Number(run.tabId) !== Number(sender.tab?.id) || !Number(run.riskControlCount)) return;
+  await chrome.storage.local.set({
+    [AUTO_GREETING_RUN_STORAGE_KEY]: {
+      ...run,
+      riskControlCount: 0,
+      updatedAt: new Date().toISOString()
+    }
+  });
+}
+
+async function reserveAutoGreetingJob(message) {
+  const siteKey = String(message.siteKey || 'boss').trim().toLowerCase();
+  const jobId = String(message.jobId || '').trim().toLowerCase();
+  if (!jobId) throw new Error('岗位 ID 为空。');
+  const recruiterId = String(message.recruiterId || '').trim().toLowerCase();
+  if (siteKey === 'liepin' && !recruiterId) throw new Error('猎聘招聘者 ID 为空。');
+  const historyKey = autoGreetingHistoryKey(message);
+  const store = await chrome.storage.local.get(['jobChatRecords', 'jobChatPendingRecords', 'jobChatIgnoredRecords', AUTO_GREETING_HISTORY_STORAGE_KEY]);
+  const records = [
+    ...(Array.isArray(store.jobChatRecords) ? store.jobChatRecords : []),
+    ...(Array.isArray(store.jobChatPendingRecords?.records) ? store.jobChatPendingRecords.records : []),
+    ...(Array.isArray(store.jobChatIgnoredRecords) ? store.jobChatIgnoredRecords : [])
+  ];
+  const history = store[AUTO_GREETING_HISTORY_STORAGE_KEY] && typeof store[AUTO_GREETING_HISTORY_STORAGE_KEY] === 'object'
+    ? store[AUTO_GREETING_HISTORY_STORAGE_KEY] : {};
+  const state = history[historyKey]?.state;
+  if (records.some((record) => recordMatchesAutoGreeting(record, siteKey, jobId, recruiterId))
+    || ['sending', 'success', 'unknown'].includes(state)) {
+    return { ok: true, reserved: false };
+  }
+  if (message.checkOnly === true) return { ok: true, reserved: true };
+  history[historyKey] = {
+    siteKey,
+    candidateKey: historyKey,
+    jobId,
+    recruiterId,
+    runId: String(message.runId || ''),
+    state: 'sending',
+    updatedAt: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [AUTO_GREETING_HISTORY_STORAGE_KEY]: history });
+  return { ok: true, reserved: true };
+}
+
+async function saveAutoGreetingSuccess(message) {
+  const siteKey = String(message.siteKey || 'boss').trim().toLowerCase();
+  const jobId = String(message.jobId || '').trim().toLowerCase();
+  if (!jobId || !message.record) throw new Error('同步记录缺少岗位信息。');
+  const recruiterId = String(message.recruiterId || '').trim().toLowerCase();
+  const historyKey = autoGreetingHistoryKey(message);
+  const store = await chrome.storage.local.get(['jobChatRecords', 'jobChatCompanyProfiles', AUTO_GREETING_HISTORY_STORAGE_KEY, AUTO_GREETING_RUN_STORAGE_KEY]);
+  const existing = Array.isArray(store.jobChatRecords) ? store.jobChatRecords : [];
+  const normalized = globalThis.JobChatRecords.normalizeStoredRecord(message.record, existing.length);
+  const foundIndex = existing.findIndex((record) => (
+    recordMatchesAutoGreeting(record, siteKey, jobId, recruiterId)
+    || record?.recordKey === normalized.recordKey
+  ));
+  const records = [...existing];
+  if (foundIndex >= 0) records[foundIndex] = { ...records[foundIndex], ...normalized, index: records[foundIndex].index || foundIndex + 1 };
+  else records.push({ ...normalized, index: records.length + 1 });
+  const history = store[AUTO_GREETING_HISTORY_STORAGE_KEY] && typeof store[AUTO_GREETING_HISTORY_STORAGE_KEY] === 'object'
+    ? store[AUTO_GREETING_HISTORY_STORAGE_KEY] : {};
+  history[historyKey] = {
+    ...(history[historyKey] || {}),
+    siteKey,
+    candidateKey: historyKey,
+    jobId,
+    recruiterId,
+    runId: String(message.runId || ''),
+    state: 'success',
+    updatedAt: new Date().toISOString()
+  };
+  const next = { jobChatRecords: records, [AUTO_GREETING_HISTORY_STORAGE_KEY]: history };
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (run?.runId === message.runId) {
+    const sentItem = message.sentItem && typeof message.sentItem === 'object' ? message.sentItem : {};
+    const entry = {
+      companyName: String(sentItem.companyName || normalized.companyName || ''),
+      companyDetail: String(sentItem.companyDetail || ''),
+      companyIndustry: String(sentItem.companyIndustry || ''),
+      companyScale: String(sentItem.companyScale || ''),
+      jobName: String(sentItem.jobName || normalized.jobName || ''),
+      jobDetail: String(sentItem.jobDetail || normalized.jobInfo?.description || ''),
+      salary: String(sentItem.salary || normalized.jobInfo?.salary || ''),
+      jobLocation: String(sentItem.jobLocation || normalized.jobInfo?.location || ''),
+      jobExperience: String(sentItem.jobExperience || normalized.jobInfo?.experience || ''),
+      jobEducation: String(sentItem.jobEducation || normalized.jobInfo?.education || ''),
+      jobSkills: Array.isArray(sentItem.jobSkills) ? sentItem.jobSkills : (Array.isArray(normalized.jobInfo?.skills) ? normalized.jobInfo.skills : []),
+      jobAddress: String(sentItem.jobAddress || normalized.jobInfo?.address || ''),
+      message: String(sentItem.message || normalized.lastMessage || ''),
+      sentAt: String(sentItem.sentAt || normalized.updatedAt || new Date().toISOString())
+    };
+    next[AUTO_GREETING_RUN_STORAGE_KEY] = {
+      ...run,
+      sentMessages: [...(Array.isArray(run.sentMessages) ? run.sentMessages : []), entry].slice(-100),
+      updatedAt: new Date().toISOString()
+    };
+  }
+  const profile = message.companyProfile;
+  if (profile?.companyKey) {
+    const profiles = store.jobChatCompanyProfiles && typeof store.jobChatCompanyProfiles === 'object' ? store.jobChatCompanyProfiles : {};
+    next.jobChatCompanyProfiles = { ...profiles, [profile.companyKey]: profile };
+  }
+  await chrome.storage.local.set(next);
+  return { ok: true };
+}
+
+async function saveAutoGreetingOutcome(message) {
+  const siteKey = String(message.siteKey || 'boss').trim().toLowerCase();
+  const jobId = String(message.jobId || '').trim().toLowerCase();
+  if (!jobId) throw new Error('岗位 ID 为空。');
+  const recruiterId = String(message.recruiterId || '').trim().toLowerCase();
+  const historyKey = autoGreetingHistoryKey(message);
+  const store = await chrome.storage.local.get([AUTO_GREETING_HISTORY_STORAGE_KEY]);
+  const history = store[AUTO_GREETING_HISTORY_STORAGE_KEY] && typeof store[AUTO_GREETING_HISTORY_STORAGE_KEY] === 'object'
+    ? store[AUTO_GREETING_HISTORY_STORAGE_KEY] : {};
+  history[historyKey] = {
+    ...(history[historyKey] || {}), siteKey, candidateKey: historyKey, jobId, recruiterId,
+    runId: String(message.runId || ''),
+    state: message.outcome === 'unknown' ? 'unknown' : 'failed',
+    error: String(message.error || ''), updatedAt: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [AUTO_GREETING_HISTORY_STORAGE_KEY]: history });
+  return { ok: true };
+}
+
+async function saveAutoGreetingProgress(message, sender) {
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (!run || run.runId !== message.runId) return { ok: false, error: '任务已失效。' };
+  if (sender.tab?.id && Number(sender.tab.id) !== Number(run.tabId)) return { ok: false, error: '任务标签页不匹配。' };
+  const progress = message.progress || {};
+  await chrome.storage.local.set({
+    [AUTO_GREETING_RUN_STORAGE_KEY]: {
+      ...run,
+      ...progress,
+      recommendedListUrl: String(message.recommendedListUrl || run.recommendedListUrl || ''),
+      deadlineAt: Number(message.deadlineAt || run.deadlineAt || 0),
+      timeLimitPaused: Boolean(message.timeLimitPaused),
+      updatedAt: new Date().toISOString()
+    }
+  });
+  const counts = `成功 ${Number(progress.succeeded || 0)}，处理 ${Number(progress.processed || 0)}，跳过 ${Number(progress.skipped || 0)}，失败 ${Number(progress.failed || 0)}`;
+  await appendAutoGreetingLog(run.tabId, `${progress.currentJobName ? `${progress.currentJobName}：` : ''}${progress.statusText || progress.status || '状态更新'}（${counts}）`);
+  return { ok: true };
+}
 
 async function readOnlineOnlyTabs() {
   const store = await chrome.storage.session.get([ONLINE_ONLY_TABS_STORAGE_KEY]);
@@ -149,6 +676,26 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (!tabs || typeof tabs !== 'object' || !Object.prototype.hasOwnProperty.call(tabs, key)) return;
     delete tabs[key];
     await chrome.storage.session.set({ [COMPANY_FILTER_TABS_STORAGE_KEY]: tabs });
+  }).catch(() => {});
+  chrome.storage.session.get([AUTO_GREETING_LOG_TABS_STORAGE_KEY, AUTO_GREETING_LOGS_STORAGE_KEY]).then(async (store) => {
+    const tabs = store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] && typeof store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] === 'object'
+      ? store[AUTO_GREETING_LOG_TABS_STORAGE_KEY] : {};
+    const logs = store[AUTO_GREETING_LOGS_STORAGE_KEY] && typeof store[AUTO_GREETING_LOGS_STORAGE_KEY] === 'object'
+      ? store[AUTO_GREETING_LOGS_STORAGE_KEY] : {};
+    delete tabs[String(tabId)];
+    delete logs[String(tabId)];
+    await chrome.storage.session.set({
+      [AUTO_GREETING_LOG_TABS_STORAGE_KEY]: tabs,
+      [AUTO_GREETING_LOGS_STORAGE_KEY]: logs
+    });
+  }).catch(() => {});
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]).then((store) => {
+    const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+    if (!run || Number(run.tabId) !== Number(tabId) || !['running', 'refreshing'].includes(run.status)) return;
+    chrome.tabs.sendMessage(tabId, { type: 'JOB_CHAT_AUTO_GREETING_WAKE' }).catch(() => {});
   }).catch(() => {});
 });
 
@@ -1318,6 +1865,125 @@ async function saveRefreshProgressRecord(progress) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_PANEL_FLOAT') {
+    const tabId = Number(message.tabId || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到关联的招聘标签页。' });
+      return;
+    }
+    floatAutoGreetingPanel(tabId, Boolean(message.debug))
+      .then((windowInfo) => sendResponse({ ok: true, windowId: windowInfo?.id || 0 }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_PANEL_DOCK') {
+    dockAutoGreetingPanel(Number(message.tabId || 0), Number(message.windowId || 0), Boolean(message.debug))
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_DEBUG_LOG') {
+    const tabId = Number(sender.tab?.id || message.tabId || 0);
+    appendAutoGreetingLog(tabId, message.message, { raw: true })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_LOG_ENABLE') {
+    const tabId = Number(message.tabId || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    setAutoGreetingLogEnabled(tabId, Boolean(message.enabled))
+      .then(() => appendAutoGreetingLog(tabId, message.enabled ? '调试日志已启用' : ''))
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_LOG_CLEAR') {
+    const tabId = Number(message.tabId || 0);
+    clearAutoGreetingLog(tabId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_STATUS_GET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    reconcileAutoGreetingRun(tabId)
+      .then((run) => sendResponse({ ok: true, run }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_EXPECT_LIST_GET') {
+    const tabId = Number(message.tabId || 0);
+    ensureAutoGreetingContent(tabId)
+      .then(() => sendMessageToTab(tabId, { type: 'JOB_CHAT_AUTO_GREETING_EXPECT_LIST_GET' }))
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_RISK_CONTROL') {
+    autoGreetingRiskQueue = autoGreetingRiskQueue
+      .catch(() => {})
+      .then(() => handleAutoGreetingRiskControl(message, sender));
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_RISK_RECOVERED') {
+    resetAutoGreetingRiskControl(message, sender)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_START') {
+    startAutoGreeting(message).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_PAUSE' || message?.type === 'JOB_CHAT_AUTO_GREETING_RESUME' || message?.type === 'JOB_CHAT_AUTO_GREETING_CANCEL') {
+    const action = message.type.endsWith('PAUSE') ? 'pause' : (message.type.endsWith('CANCEL') ? 'cancel' : 'resume');
+    controlAutoGreeting(message, action).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_RESERVE') {
+    autoGreetingSaveQueue = autoGreetingSaveQueue.catch(() => {}).then(() => reserveAutoGreetingJob(message));
+    autoGreetingSaveQueue.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_SUCCESS') {
+    autoGreetingSaveQueue = autoGreetingSaveQueue.catch(() => {}).then(() => saveAutoGreetingSuccess(message));
+    autoGreetingSaveQueue.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_OUTCOME') {
+    autoGreetingSaveQueue = autoGreetingSaveQueue.catch(() => {}).then(() => saveAutoGreetingOutcome(message));
+    autoGreetingSaveQueue.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_PROGRESS') {
+    autoGreetingSaveQueue = autoGreetingSaveQueue.catch(() => {}).then(() => saveAutoGreetingProgress(message, sender));
+    autoGreetingSaveQueue.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
 
   if (message?.type === 'JOB_CHAT_ONLINE_ONLY_GET') {
     const tabId = Number(message.tabId || sender.tab?.id || 0);
