@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "直聘|猎聘 沟通助手-dev",
-  "version": "6.0.0",
-  "description": "帮助用户统计在Boss直聘和猎聘上的招聘沟通记录，提供数据分析和导出功能。",
+  "version": "6.1.0",
+  "description": "自动筛选岗位，批量发送消息，同步并保存岗位、公司和聊天记录，导入导出历史数据",
   "permissions": [
     "activeTab",
     "scripting",
