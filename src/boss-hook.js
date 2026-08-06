@@ -405,7 +405,14 @@
     if (parsedUrl.origin !== location.origin) throw new Error('只允许请求当前 BOSS 站点。');
     const allowedPaths = new Set([
       '/wapi/zpgeek/pc/recommend/job/list.json',
+      '/wapi/zpgeek/search/joblist.json',
       '/wapi/zpgeek/pc/recommend/expect/list.json',
+      '/wapi/zpgeek/common/data/city/site.json',
+      '/wapi/zpgeek/pc/all/filter/conditions.json',
+      '/wapi/zpCommon/data/industryFilterExemption',
+      '/wapi/zpCommon/data/getCityShowPosition',
+      '/wapi/zpCommon/data/getSubwayByCity',
+      '/wapi/zpgeek/businessDistrict.json',
       '/wapi/zpgeek/job/detail.json',
       '/wapi/zpchat/geek/historyMsg',
       '/wapi/zpgeek/friend/add.json'

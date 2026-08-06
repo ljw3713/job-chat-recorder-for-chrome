@@ -1,6 +1,9 @@
 const CONFIG_STORAGE_KEY = 'jobChatAutoMessageConfig';
 const RUN_STORAGE_KEY = 'jobChatAutoGreetingRun';
 const DEBUG_LOG_STORAGE_KEY = 'jobChatAutoGreetingLogsByTab';
+const BOSS_FILTER_OPTIONS_CACHE_KEY = 'jobChatBossFilterOptionsCache';
+const BOSS_FILTER_OPTIONS_CACHE_VERSION = 2;
+const BOSS_FILTER_OPTIONS_CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
 const DEBUG_ENABLED = new URLSearchParams(location.search).get('debug') === '1';
 const PANEL_PARAMS = new URLSearchParams(location.search);
 const FLOATING_MODE = PANEL_PARAMS.get('mode') === 'floating';
@@ -18,7 +21,11 @@ const CONFIG_DEFAULTS = {
   companyFilterKeywords: '',
   greetingCount: 10,
   nonHunterOnly: false,
-  requestRatePerMinute: 25
+  requestRatePerMinute: 25,
+  bossSourceMode: 'recommend',
+  bossSearchQuery: '',
+  liepinRecommendSortType: 'PC_HP_NEW',
+  bossRecommendFilters: { city: null, jobType: null, salary: null, experience: [], degree: [], industry: [], scale: [], stage: [], position: [], multiSubway: [], multiBusinessDistrict: [] }
 };
 
 const configView = document.getElementById('configView');
@@ -27,6 +34,7 @@ const nonHunterOnlyInput = document.getElementById('nonHunterOnly');
 const greetButton = document.getElementById('greetButton');
 const configActions = document.getElementById('configActions');
 const statusBox = document.getElementById('status');
+const editLockedToast = document.getElementById('editLockedToast');
 const runView = document.getElementById('runView');
 const progressBar = document.getElementById('progressBar');
 const runState = document.getElementById('runState');
@@ -50,6 +58,12 @@ const clearDebugLogButton = document.getElementById('clearDebugLogButton');
 const panelModeButton = document.getElementById('panelModeButton');
 const viewTargetExpectRow = document.getElementById('viewTargetExpectRow');
 const viewTargetExpectChoices = document.getElementById('viewTargetExpectChoices');
+const liepinRecommendSortRow = document.getElementById('liepinRecommendSortRow');
+const liepinRecommendSortChoices = document.getElementById('liepinRecommendSortChoices');
+const bossSourceModeTabs = document.getElementById('bossSourceModeTabs');
+const bossSearchQuery = document.getElementById('bossSearchQuery');
+const bossRecommendFilterSection = document.getElementById('bossRecommendFilterSection');
+const bossRecommendFilterList = document.getElementById('bossRecommendFilterList');
 const viewFields = {
   salary: document.getElementById('viewSalary'),
   experience: document.getElementById('viewExperience'),
@@ -65,11 +79,30 @@ const viewFields = {
 
 let activeTab = null;
 let savedConfig = null;
+let renderedRunStatus = '';
+
+function isConfigEditingLocked() {
+  return ['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus);
+}
+let editLockedToastTimer = null;
+
+function showEditLockedNotice() {
+  clearTimeout(editLockedToastTimer);
+  editLockedToast.classList.remove('show');
+  void editLockedToast.offsetWidth;
+  editLockedToast.classList.add('show');
+  editLockedToastTimer = setTimeout(() => editLockedToast.classList.remove('show'), 1800);
+}
 let onlineOnlyAvailable = false;
 let quickEdit = null;
 let quickEditSaving = false;
 let targetExpectations = [];
 let selectedExpectId = '';
+let bossFilterOptions = null;
+let bossFilterOptionsError = '';
+let bossRecommendFiltersLocked = false;
+let bossLocationFilterOptions = null;
+let bossLocationFilterCityCode = '';
 
 function detectSupportedSite(tabUrl) {
   try {
@@ -118,13 +151,274 @@ async function configureDebugLogging() {
 
 function normalizeConfig(config = {}) {
   const normalized = { ...CONFIG_DEFAULTS, ...config };
+  const filter = normalized.bossRecommendFilters && typeof normalized.bossRecommendFilters === 'object'
+    ? normalized.bossRecommendFilters : {};
+  const option = (value) => {
+    const code = String(value?.code ?? '').trim();
+    const name = String(value?.name ?? '').trim();
+    return code && code !== '0' ? { code, name } : null;
+  };
+  const options = (value) => [...new Map((Array.isArray(value) ? value : []).map(option).filter(Boolean).map((item) => [item.code, item])).values()];
+  normalized.bossRecommendFilters = {
+    city: option(filter.city), jobType: option(filter.jobType), salary: option(filter.salary),
+    experience: options(filter.experience), degree: options(filter.degree),
+    industry: options(filter.industry), scale: options(filter.scale), stage: options(filter.stage),
+    position: options(filter.position), multiSubway: options(filter.multiSubway),
+    multiBusinessDistrict: options(filter.multiBusinessDistrict)
+  };
+  normalized.bossSourceMode = normalized.bossSourceMode === 'search' ? 'search' : 'recommend';
+  normalized.bossSearchQuery = String(normalized.bossSearchQuery || '').trim();
+  normalized.liepinRecommendSortType = normalized.liepinRecommendSortType === 'PC_HP_MIX' ? 'PC_HP_MIX' : 'PC_HP_NEW';
   delete normalized.greetingRatePerMinute;
   delete normalized.jobFilterMatchPercent;
   return normalized;
 }
 
+function hasFilterOptions(options) {
+  return Boolean(options && Array.isArray(options.cities) && Array.isArray(options.jobTypes)
+    && Array.isArray(options.salaries) && Array.isArray(options.experiences)
+    && Array.isArray(options.degrees) && Array.isArray(options.industries) && Array.isArray(options.scales)
+    && Array.isArray(options.stages) && Array.isArray(options.positions)
+    && options.cities.length && options.jobTypes.length && options.salaries.length
+    && options.experiences.length && options.degrees.length && options.industries.length && options.scales.length
+    && options.stages.length && options.positions.length);
+}
+
+function filterLabel(value, multiple = false) {
+  if (multiple) return value?.length ? value.map((item) => item.name).filter(Boolean).join('、') : '不限';
+  return value?.name || '不限';
+}
+
+function filterDefinitions() {
+  if (!bossFilterOptions) return [];
+  return [
+    { key: 'city', title: '城市', choices: bossFilterOptions.cities, searchable: true },
+    { key: 'jobType', title: '求职类型', choices: bossFilterOptions.jobTypes },
+    { key: 'salary', title: '推荐薪资', choices: bossFilterOptions.salaries },
+    { key: 'experience', title: '推荐经验', choices: bossFilterOptions.experiences, multiple: true },
+    { key: 'degree', title: '学历要求', choices: bossFilterOptions.degrees, multiple: true },
+    { key: 'industry', title: '公司行业', groups: bossFilterOptions.industries, multiple: true, searchable: true },
+    { key: 'scale', title: '公司规模', choices: bossFilterOptions.scales, multiple: true },
+    { key: 'stage', title: '融资阶段', choices: bossFilterOptions.stages, multiple: true, searchOnly: true },
+    { key: 'position', title: '职位类型', groups: bossFilterOptions.positions, multiple: true, searchable: true, searchOnly: true },
+    ...(bossLocationFilterOptions ? [
+      { key: 'multiBusinessDistrict', title: '区域', groups: bossLocationFilterOptions.districts, multiple: true, searchable: true, searchOnly: true, hierarchical: true },
+      { key: 'multiSubway', title: '地铁', groups: bossLocationFilterOptions.subways, multiple: true, searchable: true, searchOnly: true, hierarchical: true }
+    ] : [])
+  ];
+}
+
+function createFilterOption(definition, item, selected) {
+  const label = document.createElement('label');
+  label.className = 'recommend-filter-option';
+  const input = document.createElement('input');
+  input.type = definition.multiple ? 'checkbox' : 'radio';
+  input.name = `boss-recommend-${definition.key}`;
+  input.dataset.filterKey = definition.key;
+  input.value = item.code;
+  input.checked = selected;
+  input.disabled = bossRecommendFiltersLocked;
+  const textNode = document.createElement('span');
+  textNode.textContent = item.name;
+  label.append(input, textNode);
+  return label;
+}
+
+function renderBossRecommendFilters(config) {
+  const visible = currentSiteKey() === 'boss';
+  bossRecommendFilterSection.hidden = !visible;
+  bossRecommendFilterSection.classList.toggle('is-disabled', bossRecommendFiltersLocked);
+  bossRecommendFilterList.replaceChildren();
+  if (!visible) return;
+  if (!bossFilterOptions) {
+    const message = document.createElement('p');
+    message.className = 'recommend-filter-hint';
+    message.textContent = bossFilterOptionsError || '正在读取筛选条件…';
+    bossRecommendFilterList.appendChild(message);
+    return;
+  }
+  const filters = config.bossRecommendFilters || CONFIG_DEFAULTS.bossRecommendFilters;
+  filterDefinitions().filter((definition) => !definition.searchOnly || config.bossSourceMode === 'search').forEach((definition) => {
+    const details = document.createElement('details');
+    details.className = 'recommend-filter';
+    details.dataset.filterKey = definition.key;
+    const summary = document.createElement('summary');
+    const title = document.createElement('span');
+    title.textContent = definition.title;
+    const value = document.createElement('span');
+    value.className = 'recommend-filter-value';
+    value.textContent = filterLabel(filters[definition.key], definition.multiple);
+    summary.append(title, value);
+    const options = document.createElement('div');
+    options.className = 'recommend-filter-options';
+    if (definition.searchable) {
+      const search = document.createElement('input');
+      search.className = 'recommend-filter-search';
+      search.type = 'search';
+      search.placeholder = `搜索${definition.title}`;
+      search.disabled = bossRecommendFiltersLocked;
+      search.addEventListener('input', () => {
+        const term = search.value.trim().toLowerCase();
+        options.querySelectorAll('.recommend-filter-option').forEach((label) => {
+          label.hidden = Boolean(term) && !label.textContent.toLowerCase().includes(term);
+        });
+        options.querySelectorAll('.recommend-filter-group').forEach((group) => {
+          group.hidden = [...group.querySelectorAll('.recommend-filter-option')].every((label) => label.hidden);
+        });
+      });
+      options.appendChild(search);
+    }
+    const selectedCodes = new Set((definition.multiple ? filters[definition.key] : [filters[definition.key]])
+      .filter(Boolean).map((item) => String(item.code)));
+    options.appendChild(createFilterOption(definition, { code: '0', name: '不限' }, selectedCodes.size === 0));
+    if (definition.groups) {
+      definition.groups.forEach((group) => {
+        const groupNode = document.createElement(definition.hierarchical ? 'details' : 'div');
+        groupNode.className = definition.hierarchical ? 'recommend-filter-group recommend-filter-subgroup' : 'recommend-filter-group';
+        groupNode.dataset.groupCode = group.code;
+        const groupTitle = document.createElement(definition.hierarchical ? 'summary' : 'span');
+        groupTitle.className = 'recommend-filter-group-title';
+        groupTitle.textContent = group.name;
+        groupNode.appendChild(groupTitle);
+        const childBox = definition.hierarchical ? document.createElement('div') : groupNode;
+        if (definition.hierarchical) childBox.className = 'recommend-filter-subgroup-options';
+        group.children.forEach((item) => childBox.appendChild(createFilterOption(definition, item, selectedCodes.has(item.code))));
+        if (definition.hierarchical) groupNode.appendChild(childBox);
+        options.appendChild(groupNode);
+      });
+    } else {
+      definition.choices.forEach((item) => options.appendChild(createFilterOption(definition, item, selectedCodes.has(item.code))));
+    }
+    details.append(summary, options);
+    bossRecommendFilterList.appendChild(details);
+  });
+}
+
+function setBossRecommendFiltersLocked(locked) {
+  bossRecommendFiltersLocked = Boolean(locked);
+  bossRecommendFilterSection.classList.toggle('is-disabled', bossRecommendFiltersLocked);
+  bossRecommendFilterSection.querySelectorAll('.recommend-filter-option input, .recommend-filter-search')
+    .forEach((control) => { control.disabled = bossRecommendFiltersLocked; });
+}
+
+async function saveBossRecommendFilter(key, changedInput) {
+  if (!savedConfig) return;
+  const definition = filterDefinitions().find((item) => item.key === key);
+  if (!definition) return;
+  const choices = definition.groups
+    ? definition.groups.flatMap((group) => group.children)
+    : definition.choices;
+  const byCode = new Map(choices.map((item) => [item.code, item]));
+  const oldFilters = savedConfig.bossRecommendFilters || CONFIG_DEFAULTS.bossRecommendFilters;
+  const openFilterNode = bossRecommendFilterList.querySelector('.recommend-filter[open]');
+  const openFilterKey = openFilterNode?.dataset.filterKey || '';
+  const openOptionsNode = openFilterNode?.querySelector('.recommend-filter-options');
+  const optionsScrollTop = Number(openOptionsNode?.scrollTop || 0);
+  const openGroupCodes = [...(openFilterNode?.querySelectorAll('.recommend-filter-subgroup[open]') || [])]
+    .map((group) => group.dataset.groupCode).filter(Boolean);
+  const searchValue = openOptionsNode?.querySelector('.recommend-filter-search')?.value || '';
+  let value;
+  if (definition.multiple) {
+    const selected = changedInput.value === '0' && changedInput.checked
+      ? []
+      : [...bossRecommendFilterList.querySelectorAll(`input[data-filter-key="${key}"]:checked`)]
+        .map((input) => input.value).filter((code) => code !== '0');
+    value = [...new Set(selected)].map((code) => byCode.get(code)).filter(Boolean);
+  } else {
+    value = changedInput.value === '0' ? null : (byCode.get(changedInput.value) || null);
+  }
+  const nextFilters = { ...oldFilters, [key]: value };
+  if (key === 'city' && String(oldFilters.city?.code || '') !== String(value?.code || '')) {
+    nextFilters.multiSubway = [];
+    nextFilters.multiBusinessDistrict = [];
+  }
+  if (key === 'multiBusinessDistrict' && value.length) nextFilters.multiSubway = [];
+  if (key === 'multiSubway' && value.length) nextFilters.multiBusinessDistrict = [];
+  savedConfig = normalizeConfig({ ...savedConfig, bossRecommendFilters: nextFilters });
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: savedConfig });
+  if (key === 'city') await loadBossLocationFilterOptions();
+  renderConfigView(savedConfig);
+  const openFilter = openFilterKey && bossRecommendFilterList.querySelector(`.recommend-filter[data-filter-key="${openFilterKey}"]`);
+  if (openFilter) {
+    openFilter.open = true;
+    openGroupCodes.forEach((code) => {
+      const group = [...openFilter.querySelectorAll('.recommend-filter-subgroup')]
+        .find((item) => item.dataset.groupCode === code);
+      if (group) group.open = true;
+    });
+    const nextOptions = openFilter.querySelector('.recommend-filter-options');
+    const nextSearch = nextOptions?.querySelector('.recommend-filter-search');
+    if (nextSearch && searchValue) {
+      nextSearch.value = searchValue;
+      nextSearch.dispatchEvent(new Event('input'));
+    }
+    if (nextOptions) nextOptions.scrollTop = optionsScrollTop;
+  }
+}
+
+async function loadBossFilterOptions() {
+  if (currentSiteKey() !== 'boss') {
+    bossFilterOptions = null;
+    bossFilterOptionsError = '';
+    return;
+  }
+  bossFilterOptionsError = '';
+  const now = Date.now();
+  const store = await chrome.storage.local.get([BOSS_FILTER_OPTIONS_CACHE_KEY]);
+  const cached = store[BOSS_FILTER_OPTIONS_CACHE_KEY];
+  if (cached?.version === BOSS_FILTER_OPTIONS_CACHE_VERSION && hasFilterOptions(cached.data)
+    && Number(cached.expiresAt) > now) {
+    bossFilterOptions = cached.data;
+    return;
+  }
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_AUTO_GREETING_FILTER_OPTIONS_GET', tabId: activeTab.id });
+    if (!response?.ok || !hasFilterOptions(response.options)) throw new Error(response?.error || '无法读取推荐岗位筛选条件。');
+    bossFilterOptions = response.options;
+    const fetchedAt = Date.now();
+    await chrome.storage.local.set({ [BOSS_FILTER_OPTIONS_CACHE_KEY]: {
+      version: BOSS_FILTER_OPTIONS_CACHE_VERSION,
+      fetchedAt,
+      expiresAt: fetchedAt + BOSS_FILTER_OPTIONS_CACHE_TTL,
+      data: bossFilterOptions
+    } });
+  } catch (error) {
+    if (cached?.version === BOSS_FILTER_OPTIONS_CACHE_VERSION && hasFilterOptions(cached.data)) {
+      bossFilterOptions = cached.data;
+      bossFilterOptionsError = '筛选数据更新失败，当前使用上次缓存数据。';
+    } else {
+      bossFilterOptions = null;
+      bossFilterOptionsError = error?.message || String(error);
+    }
+  }
+}
+
+async function loadBossLocationFilterOptions() {
+  const cityCode = String(savedConfig?.bossRecommendFilters?.city?.code || '');
+  if (currentSiteKey() !== 'boss' || savedConfig?.bossSourceMode !== 'search' || !cityCode) {
+    bossLocationFilterOptions = null;
+    bossLocationFilterCityCode = '';
+    return;
+  }
+  if (bossLocationFilterCityCode === cityCode && bossLocationFilterOptions) return;
+  const response = await chrome.runtime.sendMessage({
+    type: 'JOB_CHAT_AUTO_GREETING_LOCATION_FILTER_OPTIONS_GET', tabId: activeTab.id, cityCode
+  });
+  if (!response?.ok || !Array.isArray(response.options?.districts) || !Array.isArray(response.options?.subways)) {
+    throw new Error(response?.error || '无法读取区域和地铁条件。');
+  }
+  bossLocationFilterOptions = response.options;
+  bossLocationFilterCityCode = cityCode;
+}
+
 function validateConfig(config, requireTarget = true) {
-  if (requireTarget && currentSiteKey() && !String(config.targetExpectId || '').trim()) {
+  if (requireTarget && currentSiteKey() === 'boss' && config.bossSourceMode === 'search' && !String(config.bossSearchQuery || '').trim()) {
+    throw new Error('请输入检索关键词。');
+  }
+  if (requireTarget && currentSiteKey() && currentSiteKey() !== 'boss' && !String(config.targetExpectId || '').trim()) {
+    throw new Error('请选择目标职位。');
+  }
+  if (requireTarget && currentSiteKey() === 'boss' && config.bossSourceMode !== 'search' && !String(config.targetExpectId || '').trim()) {
     throw new Error('请选择目标职位。');
   }
   if (config.salaryMinK != null && config.salaryMaxK != null && config.salaryMinK > config.salaryMaxK) {
@@ -153,9 +447,24 @@ function selectConfiguredExpectation(config = {}) {
 
 function renderTargetExpectChoices() {
   const visible = Boolean(currentSiteKey());
+  const locked = isConfigEditingLocked();
   viewTargetExpectRow.hidden = !visible;
   viewTargetExpectChoices.replaceChildren();
   if (!visible) return;
+  const searchMode = currentSiteKey() === 'boss' && savedConfig?.bossSourceMode === 'search';
+  viewTargetExpectRow.classList.toggle('source-tabs-active', currentSiteKey() === 'boss');
+  bossSourceModeTabs.hidden = currentSiteKey() !== 'boss';
+  bossSourceModeTabs.querySelectorAll('[data-source-mode]').forEach((tab) => {
+    const active = tab.dataset.sourceMode === (searchMode ? 'search' : 'recommend');
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.disabled = locked;
+  });
+  bossSearchQuery.hidden = !searchMode;
+  viewTargetExpectChoices.hidden = searchMode;
+  bossSearchQuery.disabled = locked;
+  bossSearchQuery.value = savedConfig?.bossSearchQuery || '';
+  if (searchMode) return;
   if (!targetExpectations.length) {
     viewTargetExpectChoices.textContent = '暂无可用目标职位';
     return;
@@ -168,8 +477,9 @@ function renderTargetExpectChoices() {
       input.name = 'target-expect';
       input.value = expectation.encryptId;
       input.checked = expectation.encryptId === selectedExpectId;
+      input.disabled = locked;
       input.addEventListener('change', async () => {
-        if (!input.checked) return;
+        if (!input.checked || isConfigEditingLocked()) return;
         selectedExpectId = expectation.encryptId;
         if (savedConfig) {
           const siteKey = currentSiteKey();
@@ -195,6 +505,16 @@ function renderTargetExpectChoices() {
   });
 }
 
+function renderLiepinRecommendSort(config) {
+  const visible = currentSiteKey() === 'liepin';
+  const locked = ['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus);
+  liepinRecommendSortRow.hidden = !visible;
+  liepinRecommendSortChoices.querySelectorAll('input[name="liepin-recommend-sort"]').forEach((input) => {
+    input.checked = input.value === config.liepinRecommendSortType;
+    input.disabled = locked;
+  });
+}
+
 async function loadTargetExpectations() {
   if (!currentSiteKey()) { renderTargetExpectChoices(); return; }
   const response = await chrome.runtime.sendMessage({ type: 'JOB_CHAT_AUTO_GREETING_EXPECT_LIST_GET', tabId: activeTab.id });
@@ -216,8 +536,9 @@ function keywordText(value) {
 }
 
 function renderConfigView(config) {
-  onlineOnlyInput.disabled = !onlineOnlyAvailable;
-  nonHunterOnlyInput.disabled = !onlineOnlyAvailable;
+  const locked = isConfigEditingLocked();
+  onlineOnlyInput.disabled = !onlineOnlyAvailable || locked;
+  nonHunterOnlyInput.disabled = !onlineOnlyAvailable || locked;
   nonHunterOnlyInput.checked = Boolean(config.nonHunterOnly);
   viewFields.salary.textContent = rangeText(config.salaryMinK, config.salaryMaxK, 'K');
   viewFields.experience.textContent = rangeText(config.experienceMinYears, config.experienceMaxYears, '年');
@@ -230,6 +551,8 @@ function renderConfigView(config) {
   viewFields.greetingCount.textContent = config.greetingCount == null ? '未设置' : `${config.greetingCount} 人`;
   viewFields.requestRatePerMinute.textContent = `${config.requestRatePerMinute} 次/分钟`;
   renderTargetExpectChoices();
+  renderLiepinRecommendSort(config);
+  renderBossRecommendFilters(config);
   greetButton.disabled = !currentSiteKey();
 }
 
@@ -262,7 +585,7 @@ function appendQuickRange(container, minimum, maximum, unit, labels) {
 }
 
 function enterQuickEdit(key, row) {
-  if (!savedConfig || quickEdit || !row) return;
+  if (!savedConfig || quickEdit || !row || isConfigEditingLocked()) return;
   const valueCell = row.matches('dd') ? row : row.querySelector('dd');
   if (!valueCell) return;
   valueCell.textContent = '';
@@ -364,6 +687,7 @@ function cancelQuickEdit() {
 
 function showConfigView(config) {
   savedConfig = normalizeConfig(config);
+  setBossRecommendFiltersLocked(false);
   renderConfigView(savedConfig);
   runView.hidden = true;
   configView.hidden = false;
@@ -475,6 +799,7 @@ function renderRun(run) {
   const target = Math.max(1, Number(run.config?.greetingCount || 1));
   const succeeded = Number(run.succeeded || 0);
   const statusLabels = { running: '正在运行', paused: '已暂停', refreshing: '正在刷新重试', cancelling: '正在取消', cancelled: '已取消', completed: '已完成', failed: '运行失败' };
+  renderedRunStatus = String(run.status || '');
   if (savedConfig) {
     renderConfigView(savedConfig);
     configView.hidden = false;
@@ -500,6 +825,7 @@ function renderRun(run) {
   progressBar.parentElement.setAttribute('aria-valuenow', String(percentage));
   const controllable = run.status === 'running' || run.status === 'paused';
   const executing = controllable || run.status === 'refreshing' || run.status === 'cancelling';
+  setBossRecommendFiltersLocked(executing);
   configActions.hidden = true;
   runControlButton.disabled = false;
   cancelRunButton.disabled = false;
@@ -525,8 +851,8 @@ async function refreshOnlineOnly() {
   activeTab = await getActiveTab();
   const available = Boolean(activeTab?.id && detectSupportedSite(activeTab.url || ''));
   onlineOnlyAvailable = available;
-  onlineOnlyInput.disabled = !available;
-  nonHunterOnlyInput.disabled = !available;
+  onlineOnlyInput.disabled = !available || isConfigEditingLocked();
+  nonHunterOnlyInput.disabled = !available || isConfigEditingLocked();
   if (!available) {
     onlineOnlyInput.checked = false;
     if (savedConfig && !quickEdit) renderConfigView(savedConfig);
@@ -543,11 +869,22 @@ async function refreshOnlineOnly() {
 
 async function refreshPanelContext() {
   await refreshOnlineOnly();
+  const hasRun = await refreshRunView();
+  if (!hasRun) showConfigView(savedConfig || CONFIG_DEFAULTS);
   await configureDebugLogging();
   selectConfiguredExpectation(savedConfig || {});
   targetExpectations = [];
   await loadTargetExpectations();
+  await loadBossFilterOptions();
+  await loadBossLocationFilterOptions();
   if (savedConfig && !quickEdit) renderConfigView(savedConfig);
+  if (bossFilterOptionsError) showStatus(bossFilterOptionsError, !bossFilterOptions);
+}
+
+async function refreshRunView() {
+  if (!activeTab?.id) return false;
+  const store = await chrome.storage.local.get([RUN_STORAGE_KEY]);
+  return renderRun(store[RUN_STORAGE_KEY]);
 }
 
 async function initialize() {
@@ -564,20 +901,20 @@ async function initialize() {
     await configureDebugLogging();
     selectConfiguredExpectation(normalizedStoredConfig);
     await loadTargetExpectations();
+    await loadBossFilterOptions();
+    await loadBossLocationFilterOptions();
     const runStatus = activeTab?.id
       ? await chrome.runtime.sendMessage({ type: 'JOB_CHAT_AUTO_GREETING_STATUS_GET', tabId: activeTab.id })
       : null;
-    if (runStatus?.ok && Number(runStatus.run?.tabId) === Number(activeTab?.id)
-      && ['completed', 'failed', 'cancelled'].includes(String(runStatus.run?.status || ''))) {
-      renderRun(runStatus.run);
-      return;
-    }
-    if (runStatus?.ok && Number(runStatus.run?.tabId) === Number(activeTab?.id)) {
-      runView.hidden = true;
+    if (runStatus?.ok) {
+      if (renderRun(runStatus.run)) return;
       showConfigView(normalizedStoredConfig);
+      if (bossFilterOptionsError) showStatus(bossFilterOptionsError, !bossFilterOptions);
       return;
     }
+    if (renderRun(store[RUN_STORAGE_KEY])) return;
     showConfigView(normalizedStoredConfig);
+    if (bossFilterOptionsError) showStatus(bossFilterOptionsError, !bossFilterOptions);
   } catch (error) {
     showConfigView(savedConfig || CONFIG_DEFAULTS);
     showStatus(error?.message || String(error), true);
@@ -585,6 +922,11 @@ async function initialize() {
 }
 
 onlineOnlyInput.addEventListener('change', async () => {
+  if (isConfigEditingLocked()) {
+    renderConfigView(savedConfig);
+    showEditLockedNotice();
+    return;
+  }
   const enabled = onlineOnlyInput.checked;
   onlineOnlyInput.disabled = true;
   showStatus('');
@@ -605,11 +947,16 @@ onlineOnlyInput.addEventListener('change', async () => {
     onlineOnlyInput.checked = !enabled;
     showStatus(error?.message || String(error), true);
   } finally {
-    onlineOnlyInput.disabled = false;
+    onlineOnlyInput.disabled = !onlineOnlyAvailable || isConfigEditingLocked();
   }
 });
 
 nonHunterOnlyInput.addEventListener('change', async () => {
+  if (isConfigEditingLocked()) {
+    renderConfigView(savedConfig);
+    showEditLockedNotice();
+    return;
+  }
   const enabled = nonHunterOnlyInput.checked;
   nonHunterOnlyInput.disabled = true;
   showStatus('');
@@ -623,13 +970,69 @@ nonHunterOnlyInput.addEventListener('change', async () => {
     nonHunterOnlyInput.checked = !enabled;
     showStatus(error?.message || String(error), true);
   } finally {
-    nonHunterOnlyInput.disabled = !onlineOnlyAvailable;
+    nonHunterOnlyInput.disabled = !onlineOnlyAvailable || isConfigEditingLocked();
   }
+});
+
+bossRecommendFilterList.addEventListener('change', (event) => {
+  if (bossRecommendFiltersLocked) return;
+  const input = event.target.closest('input[data-filter-key]');
+  if (!input) return;
+  if (input.checked && ['multiBusinessDistrict', 'multiSubway'].includes(input.dataset.filterKey)) {
+    const separatorIndex = input.value.indexOf(':');
+    const parentCode = separatorIndex >= 0 ? input.value.slice(0, separatorIndex) : input.value;
+    const related = [...bossRecommendFilterList.querySelectorAll(`input[data-filter-key="${input.dataset.filterKey}"]`)];
+    if (separatorIndex >= 0) {
+      const parent = related.find((item) => item.value === parentCode);
+      if (parent) parent.checked = false;
+    } else if (input.value !== '0') {
+      related.forEach((item) => {
+        if (item.value.startsWith(`${parentCode}:`)) item.checked = false;
+      });
+    }
+  }
+  saveBossRecommendFilter(input.dataset.filterKey, input)
+    .catch((error) => showStatus(error?.message || String(error), true));
+});
+
+bossSourceModeTabs.addEventListener('click', async (event) => {
+  const tab = event.target.closest('[data-source-mode]');
+  if (!tab || isConfigEditingLocked() || !savedConfig) return;
+  savedConfig = normalizeConfig({ ...savedConfig, bossSourceMode: tab.dataset.sourceMode });
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: savedConfig });
+  await loadBossLocationFilterOptions();
+  renderConfigView(savedConfig);
+});
+
+bossSearchQuery.addEventListener('change', async () => {
+  if (isConfigEditingLocked() || !savedConfig) return;
+  savedConfig = normalizeConfig({ ...savedConfig, bossSearchQuery: bossSearchQuery.value });
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: savedConfig });
+  renderConfigView(savedConfig);
+});
+
+liepinRecommendSortChoices.addEventListener('change', async (event) => {
+  const input = event.target.closest('input[name="liepin-recommend-sort"]');
+  if (!input?.checked || !savedConfig || ['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus)) return;
+  savedConfig = normalizeConfig({ ...savedConfig, liepinRecommendSortType: input.value });
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: savedConfig });
+  renderConfigView(savedConfig);
+});
+
+document.addEventListener('pointerdown', (event) => {
+  if (!bossRecommendFilterSection || bossRecommendFilterSection.hidden) return;
+  bossRecommendFilterSection.querySelectorAll('.recommend-filter[open]').forEach((filter) => {
+    if (!filter.contains(event.target)) filter.open = false;
+  });
 });
 
 configView.addEventListener('dblclick', (event) => {
   const target = event.target.closest('[data-edit-key]');
   if (!target || !configView.contains(target)) return;
+  if (isConfigEditingLocked()) {
+    showEditLockedNotice();
+    return;
+  }
   enterQuickEdit(target.dataset.editKey, target);
 });
 
@@ -783,6 +1186,19 @@ chrome.tabs.onActivated.addListener(() => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!tab.active || (!changeInfo.url && changeInfo.status !== 'complete')) return;
   refreshPanelContext().catch((error) => showStatus(error?.message || String(error), true));
+});
+
+// A BOSS risk-control recovery reloads the recruitment tab. Chrome can miss
+// storage change delivery to a side panel around that lifecycle transition,
+// so periodically reconcile the visible counters with the persisted run.
+setInterval(() => {
+  if (document.visibilityState !== 'visible'
+    || !['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus)) return;
+  refreshRunView().catch(() => {});
+}, 2000);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshRunView().catch(() => {});
 });
 
 initialize();

@@ -1,5 +1,7 @@
 (function () {
   if (!location.hostname.endsWith('zhipin.com')) return;
+  if (globalThis.__jobChatBossAutoGreetingInstalled) return;
+  globalThis.__jobChatBossAutoGreetingInstalled = true;
 
   let activeRun = null;
   let startingRun = false;
@@ -127,7 +129,17 @@
     return parsed.href;
   }
 
-  function replaceRawQueryParameter(urlText, name, value) {
+  function validateJobListUrl(requestUrl, searchMode = false) {
+    if (!searchMode) return validateRecommendedSourceUrl(requestUrl);
+    let parsed;
+    try { parsed = new URL(requestUrl, location.href); } catch (_) { parsed = null; }
+    if (parsed?.hostname !== 'www.zhipin.com' || parsed.pathname !== '/wapi/zpgeek/search/joblist.json') {
+      throw new Error('检索岗位请求地址无效。');
+    }
+    return parsed.href;
+  }
+
+  function replaceRawQueryParameter(urlText, name, value, preserveRawValue = false) {
     const hashIndex = urlText.indexOf('#');
     const withoutHash = hashIndex >= 0 ? urlText.slice(0, hashIndex) : urlText;
     const hash = hashIndex >= 0 ? urlText.slice(hashIndex) : '';
@@ -142,22 +154,72 @@
       try { decodedName = decodeURIComponent(rawName.replace(/\+/g, ' ')); } catch (_) {}
       if (decodedName !== name) return part;
       found = true;
-      return `${rawName}=${encodeURIComponent(String(value))}`;
+      return `${rawName}=${preserveRawValue ? String(value) : encodeURIComponent(String(value))}`;
     }) : [];
-    if (!found) parts.push(`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`);
+    if (!found) parts.push(`${encodeURIComponent(name)}=${preserveRawValue ? String(value) : encodeURIComponent(String(value))}`);
     return `${base}?${parts.join('&')}${hash}`;
   }
 
   function recommendedPageUrl(sourceUrl, page) {
     let requestUrl = validateRecommendedSourceUrl(sourceUrl);
-    requestUrl = replaceRawQueryParameter(requestUrl, 'page', page);
-    return replaceRawQueryParameter(requestUrl, '_', Date.now());
+    return replaceRawQueryParameter(requestUrl, 'page', page);
   }
 
-  function recommendedListUrlForExpect(encryptExpectId) {
+  function filterCodes(value, multiple = false) {
+    const values = multiple ? (Array.isArray(value) ? value : []) : [value];
+    const codes = [...new Set(values.map((item) => text(item?.code ?? item)).filter((code) => code && code !== '0'))];
+    const grouped = new Map();
+    const plain = [];
+    codes.forEach((code) => {
+      const match = code.match(/^([^:,]+):([^,_:]+)$/);
+      if (!match) { plain.push(code); return; }
+      const children = grouped.get(match[1]) || [];
+      children.push(match[2]);
+      grouped.set(match[1], children);
+    });
+    return [...plain, ...[...grouped.entries()].map(([parent, children]) => `${parent}:${children.join('_')}`)].join(',');
+  }
+
+  function applyRecommendedFilters(urlText, filters = {}) {
+    let requestUrl = urlText;
+    const fields = [
+      ['city', filterCodes(filters.city)],
+      ['jobType', filterCodes(filters.jobType)],
+      ['salary', filterCodes(filters.salary)],
+      ['experience', filterCodes(filters.experience, true)],
+      ['degree', filterCodes(filters.degree, true)],
+      ['industry', filterCodes(filters.industry, true)],
+      ['scale', filterCodes(filters.scale, true)]
+    ];
+    // Filter values are locally generated numeric codes and commas only. Keep
+    // their comma-separated wire format identical to BOSS page requests.
+    fields.forEach(([name, value]) => { requestUrl = replaceRawQueryParameter(requestUrl, name, value, true); });
+    return requestUrl;
+  }
+
+  function recommendedListUrlForExpect(encryptExpectId, filters = {}) {
     const id = text(encryptExpectId);
     if (!id) throw new Error('请选择目标职位后再启动自动打招呼。');
-    return `${location.origin}/wapi/zpgeek/pc/recommend/job/list.json?page=1&pageSize=15&city=&encryptExpectId=${encodeURIComponent(id)}&mixExpectType=&expectInfo=&jobType=&salary=&experience=&degree=&industry=&scale=&_=${Date.now()}`;
+    const baseUrl = `${location.origin}/wapi/zpgeek/pc/recommend/job/list.json?page=1&pageSize=15&city=&encryptExpectId=${encodeURIComponent(id)}&mixExpectType=&expectInfo=&jobType=&salary=&experience=&degree=&industry=&scale=&_=${Date.now()}`;
+    return applyRecommendedFilters(baseUrl, filters);
+  }
+
+  function searchListUrl() {
+    return `${location.origin}/wapi/zpgeek/search/joblist.json?_=${Date.now()}`;
+  }
+
+  function searchListBody(config, page) {
+    const filters = config?.bossRecommendFilters || {};
+    const fields = [
+      ['page', page], ['pageSize', 15], ['query', text(config?.bossSearchQuery)],
+      ['city', filterCodes(filters.city)], ['jobType', filterCodes(filters.jobType)],
+      ['experience', filterCodes(filters.experience, true)], ['degree', filterCodes(filters.degree, true)],
+      ['scale', filterCodes(filters.scale, true)], ['salary', filterCodes(filters.salary)],
+      ['industry', filterCodes(filters.industry, true)], ['stage', filterCodes(filters.stage, true)],
+      ['position', filterCodes(filters.position, true)], ['multiSubway', filterCodes(filters.multiSubway, true)],
+      ['multiBusinessDistrict', filterCodes(filters.multiBusinessDistrict, true)], ['scene', '1']
+    ];
+    return fields.map(([name, value]) => `${name}=${String(value ?? '')}`).join('&');
   }
 
   function recommendedCandidate(job) {
@@ -249,9 +311,18 @@
       run.lastRequestAt = Date.now();
       await report(run, { statusText: `正在请求${label}` });
       if (typeof onStart === 'function') onStart();
-      await debugLog(`请求 ${method} ${requestUrl}`);
+      await debugLog([
+        `请求 ${method} ${requestUrl}`,
+        method === 'POST' && requestInit.body != null ? `Request payload\n${String(requestInit.body)}` : ''
+      ].filter(Boolean).join('\n'));
       try {
-        const result = await globalThis.JobChatBossPageRequest(requestUrl, requestInit);
+        const requestAbortController = new AbortController();
+        run.requestAbortController = requestAbortController;
+        const result = await globalThis.JobChatBossPageRequest(requestUrl, {
+          ...requestInit,
+          signal: requestAbortController.signal
+        });
+        if (run.requestAbortController === requestAbortController) run.requestAbortController = null;
         await debugLog([
           `响应 ${method} ${requestUrl}`,
           `HTTP ${Number(result?.status || 0)} ${String(result?.statusText || '')}`.trim(),
@@ -265,7 +336,8 @@
         if (result?.ok && payload?.code === 1 && String(payload?.message || '').includes('操作过于频繁')) {
           await report(run, { statusText: '请求过于频繁，等待5秒后重试' });
           await debugLog(`${label}返回 code=1（操作过于频繁），5 秒后重试当前请求。`);
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          await waitForRateDelay(run, 5000);
+          await waitWhilePaused(run);
           try {
             if (new URL(requestUrl, location.href).searchParams.has('_')) {
               requestUrl = replaceRawQueryParameter(requestUrl, '_', Date.now());
@@ -275,6 +347,7 @@
         }
         return result;
       } catch (error) {
+        run.requestAbortController = null;
         await debugLog([
           `请求异常 ${method} ${requestUrl}`,
           `${error?.name || 'Error'}: ${error?.message || String(error)}`
@@ -367,10 +440,14 @@
   }
 
   async function loadRecommendedPage(run, sourceUrl, page, reset = false) {
-    const requestUrl = recommendedPageUrl(sourceUrl, page);
+    const searchMode = run.config?.bossSourceMode === 'search';
+    const requestUrl = searchMode ? sourceUrl : recommendedPageUrl(sourceUrl, page);
+    const init = searchMode
+      ? { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: searchListBody(run.config, page), timeoutMs: 30000 }
+      : { timeoutMs: 30000 };
     const payload = parseResponse(
-      await pacedPageRequest(run, requestUrl, { timeoutMs: 30000 }, `推荐岗位第 ${page} 页`),
-      '推荐岗位请求'
+      await pacedPageRequest(run, requestUrl, init, `${searchMode ? '检索' : '推荐'}岗位第 ${page} 页`),
+      `${searchMode ? '检索' : '推荐'}岗位请求`
     );
     if (payload.code === 37) await restartAfterRiskControl(run, '推荐岗位请求');
     if (payload.code !== 0) throw new Error(payload.message || `推荐岗位接口返回 code=${payload.code}`);
@@ -526,7 +603,7 @@
       : {};
     const run = {
       runId: message.runId,
-      recommendedListUrl: validateRecommendedSourceUrl(message.recommendedListUrl),
+      recommendedListUrl: validateJobListUrl(message.recommendedListUrl, message.config?.bossSourceMode === 'search'),
       config: message.config || {},
       onlineOnly: Boolean(message.onlineOnly),
       paused: false,
@@ -535,6 +612,7 @@
       postStartedJobId: '',
       resume: null,
       rateWake: null,
+      requestAbortController: null,
       deadlineAt: Number(message.deadlineAt || Date.now() + 30 * 60 * 1000),
       timeLimitPaused: Boolean(initialProgress.timeLimitPaused),
       lastRequestAt: 0,
@@ -546,7 +624,7 @@
         failed: Number(initialProgress.failed || 0),
         totalDiscovered: Number(initialProgress.totalDiscovered || 0),
         currentJobName: '',
-        statusText: initialProgress.succeeded ? '页面已刷新，继续处理推荐岗位' : '正在读取推荐岗位'
+        statusText: initialProgress.succeeded ? '页面已刷新，继续处理岗位' : (message.config?.bossSourceMode === 'search' ? '正在检索岗位' : '正在读取推荐岗位')
       }
     };
     activeRun = run;
@@ -613,7 +691,12 @@
     if (message?.type === 'JOB_CHAT_AUTO_GREETING_START') {
       if (activeRun || startingRun) { sendResponse({ ok: false, error: '当前标签页已有自动打招呼任务。' }); return; }
       try {
-        const recommendedListUrl = message.recommendedListUrl || recommendedListUrlForExpect(message.config?.targetExpectId);
+        // The first start builds a complete URL from the saved filter snapshot.
+        // Once that URL has been persisted, including page-reload recovery, paging
+        // must preserve every original parameter and change only `page`.
+        const recommendedListUrl = message.recommendedListUrl || (message.config?.bossSourceMode === 'search'
+          ? searchListUrl()
+          : recommendedListUrlForExpect(message.config?.targetExpectId, message.config?.bossRecommendFilters));
         runAutoGreeting({ ...message, recommendedListUrl });
         sendResponse({ ok: true, recommendedListUrl });
       } catch (error) {
@@ -632,6 +715,76 @@
           sendResponse({ ok: true, expectations });
         })
         .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+      return true;
+    }
+    if (message?.type === 'JOB_CHAT_AUTO_GREETING_FILTER_OPTIONS_GET') {
+      const stamp = Date.now();
+      const request = (url, label) => globalThis.JobChatBossPageRequest(url, { timeoutMs: 30000 })
+        .then((result) => parseResponse(result, label));
+      Promise.all([
+        request('/wapi/zpgeek/common/data/city/site.json', '城市条件请求'),
+        request(`/wapi/zpgeek/pc/all/filter/conditions.json?_=${stamp}`, '筛选条件请求'),
+        request(`/wapi/zpCommon/data/industryFilterExemption?_=${stamp}`, '行业条件请求'),
+        request(`/wapi/zpCommon/data/getCityShowPosition?_=${stamp}`, '职位类型请求')
+      ]).then(([cityPayload, conditionPayload, industryPayload, positionPayload]) => {
+        if (cityPayload.code !== 0 || conditionPayload.code !== 0 || industryPayload.code !== 0 || positionPayload.code !== 0) {
+          throw new Error('筛选条件接口返回异常。');
+        }
+        const option = (item) => ({ code: text(item?.code), name: text(item?.name) });
+        const cityMap = new Map();
+        (Array.isArray(cityPayload?.zpData?.siteGroup) ? cityPayload.zpData.siteGroup : []).forEach((group) => {
+          (Array.isArray(group?.cityList) ? group.cityList : []).forEach((city) => {
+            const item = option(city);
+            if (item.code && item.name && !cityMap.has(item.code)) cityMap.set(item.code, item);
+          });
+        });
+        const list = (name) => (Array.isArray(conditionPayload?.zpData?.[name]) ? conditionPayload.zpData[name] : [])
+          .map(option).filter((item) => item.code && item.code !== '0' && item.name);
+        const industries = (Array.isArray(industryPayload?.zpData) ? industryPayload.zpData : []).map((group) => ({
+          code: text(group?.code),
+          name: text(group?.name),
+          children: (Array.isArray(group?.subLevelModelList) ? group.subLevelModelList : [])
+            .map(option).filter((item) => item.code && item.name)
+        })).filter((group) => group.name && group.children.length);
+        const collectPositionLeaves = (nodes) => (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
+          const children = collectPositionLeaves(node?.subLevelModelList);
+          return children.length ? children : [option(node)].filter((item) => item.code && item.name);
+        });
+        const positions = (Array.isArray(positionPayload?.zpData?.position) ? positionPayload.zpData.position : []).map((group) => ({
+          code: text(group?.code), name: text(group?.name), children: collectPositionLeaves(group?.subLevelModelList)
+        })).filter((group) => group.name && group.children.length);
+        sendResponse({ ok: true, options: {
+          cities: [...cityMap.values()], jobTypes: list('jobTypeList'), salaries: list('salaryList'),
+          experiences: list('experienceList'), degrees: list('degreeList'), scales: list('scaleList'),
+          stages: list('stageList'), industries, positions
+        } });
+      }).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+      return true;
+    }
+    if (message?.type === 'JOB_CHAT_AUTO_GREETING_LOCATION_FILTER_OPTIONS_GET') {
+      const cityCode = text(message.cityCode);
+      if (!/^\d+$/.test(cityCode)) { sendResponse({ ok: false, error: '请选择有效城市后再读取区域和地铁。' }); return; }
+      const stamp = Date.now();
+      const request = (url, label) => globalThis.JobChatBossPageRequest(url, { timeoutMs: 30000 })
+        .then((result) => parseResponse(result, label));
+      Promise.all([
+        request(`/wapi/zpgeek/businessDistrict.json?cityCode=${cityCode}&_=${stamp}`, '区域条件请求'),
+        request(`/wapi/zpCommon/data/getSubwayByCity?cityCode=${cityCode}&_=${stamp}`, '地铁条件请求')
+      ]).then(([districtPayload, subwayPayload]) => {
+        if (districtPayload.code !== 0 || subwayPayload.code !== 0) throw new Error('区域或地铁条件接口返回异常。');
+        const groupList = (list) => (Array.isArray(list) ? list : []).map((parent) => {
+          const parentCode = text(parent?.code);
+          const parentName = text(parent?.name);
+          const children = (Array.isArray(parent?.subLevelModelList) ? parent.subLevelModelList : []).map((child) => ({
+            code: `${parentCode}:${text(child?.code)}`, name: text(child?.name)
+          })).filter((item) => item.code !== ':' && item.name);
+          return { code: parentCode, name: parentName, children: [{ code: parentCode, name: `全${parentName}` }, ...children] };
+        }).filter((group) => group.code && group.name);
+        sendResponse({ ok: true, options: {
+          districts: groupList(districtPayload?.zpData?.businessDistrict?.subLevelModelList),
+          subways: groupList(subwayPayload?.zpData?.subwayList)
+        } });
+      }).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
       return true;
     }
     if (message?.type === 'JOB_CHAT_AUTO_GREETING_PAUSE') {
@@ -660,6 +813,10 @@
       activeRun.paused = false;
       activeRun.resume?.();
       activeRun.resume = null;
+      activeRun.rateWake?.();
+      activeRun.rateWake = null;
+      activeRun.requestAbortController?.abort();
+      activeRun.requestAbortController = null;
       report(activeRun, { status: 'cancelling', statusText: '正在取消任务' });
       sendResponse({ ok: true });
       return;

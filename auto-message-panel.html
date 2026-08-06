@@ -121,6 +121,90 @@
         flex-wrap: wrap;
         gap: 8px 12px;
       }
+      .source-mode-tabs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin: 0;
+        border-bottom: 1px solid #e5e7eb;
+        background: #f9fafb;
+      }
+      .source-mode-tab {
+        position: relative;
+        border: 0;
+        border-radius: 0;
+        padding: 6px 10px;
+        background: transparent;
+        color: #4b5563;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .source-mode-tab + .source-mode-tab { border-left: 1px solid #e5e7eb; }
+      .source-mode-tab.active { background: #fff; color: #6d28d9; font-weight: 600; }
+      .source-mode-tab.active::after {
+        position: absolute;
+        right: 14px;
+        bottom: -1px;
+        left: 14px;
+        height: 2px;
+        border-radius: 999px;
+        background: #7c3aed;
+        content: '';
+      }
+      .source-mode-tab:disabled { cursor: not-allowed; opacity: .55; }
+      .source-mode-panel {
+        min-height: 32px;
+        padding: 5px 10px;
+        align-items: center;
+        line-height: 20px;
+        white-space: normal;
+      }
+      .search-mode-query { width: calc(100% - 20px); height: 32px; margin: 5px 10px; padding: 5px 8px; border: 1px solid #a78bfa; border-radius: 6px; font: inherit; font-size: 13px; }
+      .config-row.source-tabs-active {
+        display: block;
+        padding: 0;
+        background: #fff;
+      }
+      .config-row.source-tabs-active:hover { background: #fff; }
+      .config-row.source-tabs-active > dt { display: none; }
+      .config-row.source-tabs-active > dd {
+        display: block;
+        margin: 0;
+        line-height: normal;
+        white-space: normal;
+      }
+      .config-row.source-tabs-active #viewTargetExpectChoices[hidden],
+      .config-row.source-tabs-active #bossSearchQuery[hidden] {
+        display: none !important;
+      }
+      #viewTargetExpectRow:not(.source-tabs-active) {
+        min-height: 60px;
+        align-items: center;
+        padding-top: 8px;
+        padding-bottom: 8px;
+      }
+      #viewTargetExpectRow:not(.source-tabs-active) > dd {
+        display: flex;
+        min-height: 32px;
+        align-items: center;
+        margin: 0;
+        line-height: normal;
+        white-space: normal;
+      }
+      #viewTargetExpectRow:not(.source-tabs-active) .source-mode-panel {
+        width: 100%;
+        padding: 5px 0;
+      }
+      #liepinRecommendSortRow {
+        min-height: 44px;
+        align-items: center;
+        padding-top: 6px;
+        padding-bottom: 6px;
+      }
+      #liepinRecommendSortChoices {
+        min-height: 32px;
+        align-items: center;
+        white-space: normal;
+      }
       .expect-option {
         display: inline-flex;
         align-items: center;
@@ -132,6 +216,141 @@
       .expect-option input {
         margin: 0;
         accent-color: #7c3aed;
+      }
+      .recommend-filter-section {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fafafa;
+      }
+      .recommend-filter-section > summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        cursor: pointer;
+        list-style: none;
+      }
+      .recommend-filter-section > summary::-webkit-details-marker {
+        display: none;
+      }
+      .recommend-filter-section > summary::after {
+        content: '⌄';
+        color: #6b7280;
+        font-size: 16px;
+        line-height: 1;
+      }
+      .recommend-filter-section[open] > summary::after {
+        transform: rotate(180deg);
+      }
+      .recommend-filter-section.is-disabled .recommend-filter-option,
+      .recommend-filter-section.is-disabled .recommend-filter-search {
+        opacity: 0.55;
+      }
+      .recommend-filter-content {
+        display: grid;
+        gap: 8px;
+        padding: 0 10px 10px;
+      }
+      .recommend-filter-title {
+        margin: 0;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .recommend-filter-hint {
+        margin: 0;
+        color: #6b7280;
+        font-size: 11px;
+        line-height: 17px;
+      }
+      .recommend-filter-list {
+        display: grid;
+        gap: 6px;
+      }
+      .recommend-filter {
+        border: 1px solid #e5e7eb;
+        border-radius: 7px;
+        background: #fff;
+      }
+      .recommend-filter summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 10px;
+        color: #374151;
+        cursor: pointer;
+        font-size: 12px;
+        list-style: none;
+      }
+      .recommend-filter summary::-webkit-details-marker {
+        display: none;
+      }
+      .recommend-filter-value {
+        color: #7c3aed;
+        text-align: right;
+      }
+      .recommend-filter-options {
+        display: grid;
+        gap: 5px;
+        max-height: 190px;
+        overflow: auto;
+        padding: 0 10px 10px;
+      }
+      .recommend-filter-search {
+        width: 100%;
+        margin: 0 0 4px;
+        padding: 6px 7px;
+        border: 1px solid #d1d5db;
+        border-radius: 5px;
+        font: inherit;
+        font-size: 12px;
+      }
+      .recommend-filter-option {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #4b5563;
+        font-size: 12px;
+        line-height: 18px;
+        cursor: pointer;
+      }
+      .recommend-filter-option input {
+        margin: 0;
+        accent-color: #7c3aed;
+      }
+      .recommend-filter-group {
+        display: grid;
+        gap: 4px;
+        padding-top: 5px;
+        border-top: 1px solid #f3f4f6;
+      }
+      .recommend-filter-group:first-of-type {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .recommend-filter-group-title {
+        color: #6b7280;
+        font-size: 11px;
+      }
+      .recommend-filter-subgroup {
+        border-top: 1px solid #f3f4f6;
+      }
+      .recommend-filter-subgroup:first-of-type { border-top: 0; }
+      .recommend-filter-subgroup > summary {
+        padding: 5px 2px;
+        color: #6b7280;
+        font-size: 11px;
+      }
+      .recommend-filter-subgroup > summary::after {
+        content: '⌄';
+        font-size: 13px;
+      }
+      .recommend-filter-subgroup[open] > summary::after { transform: rotate(180deg); }
+      .recommend-filter-subgroup-options {
+        display: grid;
+        gap: 4px;
+        padding: 2px 0 6px 12px;
       }
       .condition-option {
         display: inline-flex;
@@ -238,6 +457,27 @@
       }
       .status.error {
         color: #b91c1c;
+      }
+      .edit-locked-toast {
+        position: fixed;
+        left: 50%;
+        bottom: 28px;
+        z-index: 1000;
+        transform: translate(-50%, 10px);
+        padding: 9px 14px;
+        border-radius: 7px;
+        background: rgba(31, 41, 55, 0.94);
+        color: #fff;
+        font-size: 13px;
+        line-height: 20px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.2);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.16s ease, transform 0.16s ease;
+      }
+      .edit-locked-toast.show {
+        opacity: 1;
+        transform: translate(-50%, 0);
       }
       .run-view {
         display: grid;
@@ -478,11 +718,38 @@
       <section id="configView" class="config-view" hidden>
         <dl class="config-list">
           <div id="viewTargetExpectRow" class="config-row" hidden>
-            <dt>目标职位</dt>
-            <dd id="viewTargetExpectChoices" class="expect-options">
-              正在读取…
+            <dt>岗位来源</dt>
+            <dd>
+              <div id="bossSourceModeTabs" class="source-mode-tabs" role="tablist" aria-label="岗位来源">
+                <button class="source-mode-tab" type="button" role="tab" data-source-mode="recommend">推荐模式</button>
+                <button class="source-mode-tab" type="button" role="tab" data-source-mode="search">检索模式</button>
+              </div>
+              <div id="viewTargetExpectChoices" class="expect-options source-mode-panel">正在读取…</div>
+              <input id="bossSearchQuery" class="search-mode-query" type="search" placeholder="输入职位关键词，例如：工程师" hidden />
             </dd>
           </div>
+          <div id="liepinRecommendSortRow" class="config-row" hidden>
+            <dt>类型</dt>
+            <dd id="liepinRecommendSortChoices" class="expect-options">
+              <label class="expect-option"><input type="radio" name="liepin-recommend-sort" value="PC_HP_NEW" /><span>最新</span></label>
+              <label class="expect-option"><input type="radio" name="liepin-recommend-sort" value="PC_HP_MIX" /><span>综合</span></label>
+            </dd>
+          </div>
+          <details
+            id="bossRecommendFilterSection"
+            class="recommend-filter-section"
+            hidden
+          >
+            <summary>
+              <span class="recommend-filter-title">推荐岗位筛选条件</span>
+            </summary>
+            <div class="recommend-filter-content">
+              <div
+                id="bossRecommendFilterList"
+                class="recommend-filter-list"
+              ></div>
+            </div>
+          </details>
           <div class="config-row compact-row">
             <dt>工资范围</dt>
             <dd id="viewSalary" data-edit-key="salary" title="双击快速编辑">
@@ -561,7 +828,13 @@
           </div>
           <div class="config-row">
             <dt>打招呼数量</dt>
-            <dd id="viewGreetingCount" data-edit-key="greetingCount" title="双击快速编辑">10 人</dd>
+            <dd
+              id="viewGreetingCount"
+              data-edit-key="greetingCount"
+              title="双击快速编辑"
+            >
+              10 人
+            </dd>
           </div>
           <div
             class="config-row"
@@ -600,7 +873,9 @@
           <div id="runCurrent" class="run-current"></div>
         </div>
         <section id="sentMessagesPanel" class="sent-messages">
-          <div class="sent-messages-header">已发送信息 <span id="sentMessagesDate"></span></div>
+          <div class="sent-messages-header">
+            已发送信息 <span id="sentMessagesDate"></span>
+          </div>
           <div id="sentMessagesList" class="sent-messages-list"></div>
         </section>
         <div id="runActions" class="run-actions">
@@ -649,6 +924,9 @@
         tabindex="-1"
       ></div>
       <p id="status" class="status" role="status"></p>
+      <div id="editLockedToast" class="edit-locked-toast" role="status" aria-live="polite">
+        任务执行中无法编辑
+      </div>
     </main>
     <script src="src/auto-message-panel.js"></script>
   </body>

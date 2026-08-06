@@ -361,6 +361,20 @@ async function controlAutoGreeting(message, action) {
     }
     return { ok: true };
   }
+  if (action === 'cancel' && run?.status === 'paused' && run.riskRetryPaused) {
+    const cancelled = {
+      ...run,
+      status: 'cancelled',
+      currentJobName: '',
+      riskRetryPaused: false,
+      riskRecoverySessionId: '',
+      statusText: '自动打招呼任务已取消',
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: cancelled });
+    await appendAutoGreetingLog(run.tabId, cancelled.statusText);
+    return { ok: true };
+  }
   const allowed = action === 'cancel'
     ? run?.status === 'paused'
     : ['running', 'paused'].includes(run?.status);
@@ -1935,6 +1949,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_FILTER_OPTIONS_GET') {
+    const tabId = Number(message.tabId || 0);
+    ensureAutoGreetingContent(tabId)
+      .then(() => sendMessageToTab(tabId, { type: 'JOB_CHAT_AUTO_GREETING_FILTER_OPTIONS_GET' }))
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_LOCATION_FILTER_OPTIONS_GET') {
+    const tabId = Number(message.tabId || 0);
+    ensureAutoGreetingContent(tabId)
+      .then(() => sendMessageToTab(tabId, { type: 'JOB_CHAT_AUTO_GREETING_LOCATION_FILTER_OPTIONS_GET', cityCode: String(message.cityCode || '') }))
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
   if (message?.type === 'JOB_CHAT_AUTO_GREETING_RISK_CONTROL') {
     autoGreetingRiskQueue = autoGreetingRiskQueue
       .catch(() => {})
@@ -1944,7 +1976,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'JOB_CHAT_AUTO_GREETING_RISK_RECOVERED') {
-    resetAutoGreetingRiskControl(message, sender)
+    autoGreetingSaveQueue = autoGreetingSaveQueue
+      .catch(() => {})
+      .then(() => resetAutoGreetingRiskControl(message, sender));
+    autoGreetingSaveQueue
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "直聘|猎聘 沟通助手-dev",
-  "version": "6.1.0",
+  "version": "6.2.0",
   "description": "自动筛选岗位，批量发送消息，同步并保存岗位、公司和聊天记录，导入导出历史数据",
   "permissions": [
     "activeTab",

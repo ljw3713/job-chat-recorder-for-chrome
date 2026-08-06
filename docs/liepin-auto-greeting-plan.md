@@ -3,6 +3,7 @@
 ## 1. 文档状态
 
 - 计划日期：2026-08-05
+- 更新日期：2026-08-06
 - 状态：已实施（首期，仅处理首页推荐接口返回的首屏岗位）
 - 参考实现：`zhipin-auto-greeting-plan.md`
 - 岗位详情参考：`liepin-job-detail-plan.md`
@@ -205,12 +206,21 @@ Content-Type: application/json;charset=UTF-8
 {
   "data": {
     "operateKind": "LOGIN",
-    "sortType": "PC_HP_MIX",
+    "sortType": "PC_HP_NEW",
     "selectedExpect": "{序列化后的完整期望对象，包含 tabTitle}",
     "existFallbackResult": false
   }
 }
 ```
+
+自动消息面板在“岗位来源”下方提供“类型”单选项：
+
+- “最新”为默认值，请求发送 `data.sortType=PC_HP_NEW`。
+- “综合”请求发送 `data.sortType=PC_HP_MIX`。
+
+选择保存到 `jobChatAutoMessageConfig.liepinRecommendSortType`，并随任务配置形成快照。任务
+运行、限速等待、暂停、刷新重试或取消期间，该选项与目标职位、“仅在线”“非猎头”及
+其他配置一起禁用。
 
 构造 `selectedExpect` 时：
 
@@ -668,6 +678,7 @@ idle → running ⇄ paused
 
 - 根据站点请求猎聘期望列表。
 - 展示并保存目标职位。
+- 展示并保存“最新/综合”推荐排序类型，默认“最新”。
 - 校验配置和目标期望。
 - 启动、暂停、继续和取消任务。
 - 展示进度、日志和最近发送结果。
@@ -895,6 +906,7 @@ async function runLiepinAutoGreeting(run) {
 
 - 面板能读取并展示 `validExpects`。
 - 选择不同期望时，推荐请求中的 `selectedExpect.expectId` 正确。
+- 默认排序发送 `sortType=PC_HP_NEW`，选择“综合”后发送 `sortType=PC_HP_MIX`。
 - `head_id`、`jobId`、`jobKind` 和 `recruiterId` 均来自同一推荐候选。
 - 不把样本 Cookie、XSRF Token、trace ID 写死。
 - 非猎聘域名和白名单外请求被拒绝。
@@ -931,6 +943,7 @@ async function runLiepinAutoGreeting(run) {
 - 状态面板持续显示，不在任务结束时自动关闭。
 - 已发送列表展示公司、岗位、薪资和任务日期，最多显示 8 条并可滚动。
 - 暂停、继续、取消和浮动/停靠不丢失任务状态。
+- 任务执行和等待期间不能修改目标职位、排序类型、“仅在线”“非猎头”或双击编辑条件。
 
 ## 19. 实施前仍需确认
 

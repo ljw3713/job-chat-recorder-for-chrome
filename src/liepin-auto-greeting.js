@@ -177,7 +177,7 @@
     return found;
   }
 
-  async function fetchRecommendedJobs(expectation) {
+  async function fetchRecommendedJobs(expectation, config) {
     const selectedExpect = { ...(expectation.data || {}), tabTitle: expectation.positionName };
     const payload = await requestJson(RECOMMEND_PATH, {
       label: '推荐岗位请求',
@@ -185,7 +185,7 @@
       body: {
         data: {
           operateKind: 'LOGIN',
-          sortType: 'PC_HP_MIX',
+          sortType: config?.liepinRecommendSortType === 'PC_HP_MIX' ? 'PC_HP_MIX' : 'PC_HP_NEW',
           selectedExpect: JSON.stringify(selectedExpect),
           existFallbackResult: false
         }
@@ -628,7 +628,7 @@
       const expectations = await fetchExpectations();
       const expectation = selectedExpectation(expectations, run.config);
       await waitForRate(run, '推荐岗位列表');
-      const candidates = await fetchRecommendedJobs(expectation);
+      const candidates = await fetchRecommendedJobs(expectation, run.config);
       const seen = new Set();
       run.progress.totalDiscovered = candidates.length;
       await report(run);
