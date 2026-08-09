@@ -179,22 +179,32 @@
 
   async function fetchRecommendedJobs(expectation, config) {
     const selectedExpect = { ...(expectation.data || {}), tabTitle: expectation.positionName };
-    const payload = await requestJson(RECOMMEND_PATH, {
-      label: '推荐岗位请求',
-      json: true,
-      body: {
-        data: {
-          operateKind: 'LOGIN',
-          sortType: config?.liepinRecommendSortType === 'PC_HP_MIX' ? 'PC_HP_MIX' : 'PC_HP_NEW',
-          selectedExpect: JSON.stringify(selectedExpect),
-          existFallbackResult: false
+    const candidates = [];
+    let operateKind = 'LOGIN';
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const payload = await requestJson(RECOMMEND_PATH, {
+        label: '推荐岗位请求',
+        json: true,
+        body: {
+          data: {
+            operateKind,
+            sortType: config?.liepinRecommendSortType === 'PC_HP_MIX' ? 'PC_HP_MIX' : 'PC_HP_NEW',
+            selectedExpect: JSON.stringify(selectedExpect),
+            existFallbackResult: false
+          }
         }
-      }
-    });
-    if (payload?.flag !== 1) throw new Error(payload?.msg || payload?.message || '推荐岗位接口返回异常。');
-    const list = payload?.data?.data;
-    if (!Array.isArray(list)) throw new Error('推荐岗位接口缺少岗位列表。');
-    return list;
+      });
+      if (payload?.flag !== 1) throw new Error(payload?.msg || payload?.message || '推荐岗位接口返回异常。');
+      const list = payload?.data?.data;
+      if (!Array.isArray(list)) throw new Error('推荐岗位接口缺少岗位列表。');
+      candidates.push(...list);
+      hasNextPage = payload?.data?.hasNextPage === true;
+      operateKind = 'UP';
+    }
+
+    return candidates;
   }
 
   function candidateParts(candidate) {
