@@ -613,7 +613,12 @@ function filterAllRecords() {
   if (jobDetailNotSyncedOnly) records = records.filter((record) => !isResolvedJobInfo(record));
   const words = queryValue.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) records = records.filter((record) => {
-    const searchable = [record.companyName, record.jobName, record.recruiterName, record.recruiterTitle, record.lastMessage].join(' ').toLocaleLowerCase();
+    const conversationText = normalizeConversation(record?.conversation).messages
+      .map((message) => message.text)
+      .join(' ');
+    const searchable = [record.companyName, record.jobName, record.recruiterName, record.recruiterTitle, record.lastMessage, conversationText]
+      .join(' ')
+      .toLocaleLowerCase();
     return words.every((word) => searchable.includes(word));
   });
   const dateField = dateFieldFilter.value || 'updatedDate';
@@ -1380,6 +1385,54 @@ function selectedRecords() { return allRecords.filter((record) => selectedKeys.h
 function recordSiteKey(record) {
   return record?.siteKey || (record?.sourceName === '猎聘' ? 'liepin' : (record?.sourceName === 'BOSS直聘' ? 'boss' : ''));
 }
+
+function safePlatformId(value) {
+  const id = normalizeText(value);
+  return /^[A-Za-z0-9_-]+~?$/.test(id) ? id : '';
+}
+
+function companyExternalId(record, siteKey) {
+  const companyKey = normalizeText(record?.companyKey);
+  const prefix = `${siteKey}|`;
+  return companyKey.startsWith(prefix) ? safePlatformId(companyKey.slice(prefix.length)) : '';
+}
+
+function liepinJobDetailUrl(record) {
+  const value = normalizeText(record?.liepin?.jobDetailUrl);
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'www.liepin.com' ? url.href : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function recordDetailLinks(record) {
+  const siteKey = recordSiteKey(record);
+  if (siteKey === 'boss') {
+    const jobId = safePlatformId(record?.boss?.jobId);
+    const companyId = companyExternalId(record, siteKey);
+    return {
+      job: jobId ? `https://www.zhipin.com/job_detail/${jobId}.html` : '',
+      company: companyId ? `https://www.zhipin.com/gongsi/job/${companyId}.html` : ''
+    };
+  }
+  if (siteKey === 'liepin') {
+    const companyId = companyExternalId(record, siteKey);
+    return {
+      job: liepinJobDetailUrl(record),
+      company: companyId ? `https://www.liepin.com/company/${companyId}/` : ''
+    };
+  }
+  return { job: '', company: '' };
+}
+
+function detailLinkMarkup(text, url) {
+  const label = escapeHtml(text);
+  return url ? `<a class="record-detail-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+}
+
 function isSendable(record) {
   const siteKey = recordSiteKey(record);
   if (siteKey !== 'boss' && siteKey !== 'liepin') return '暂不支持该网站';
@@ -1453,19 +1506,22 @@ function renderTable() {
     <table>
       ${tableHeader}
       <tbody>
-        ${records.map((r) => `
+        ${records.map((r) => {
+          const links = recordDetailLinks(r);
+          return `
           <tr>
             <td class="select-cell"><input class="row-select" type="checkbox" value="${escapeHtml(r.recordKey)}" /></td>
             <td class="source-cell">${escapeHtml(r.sourceName)}</td>
-            <td class="company-cell company-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看公司详情">${escapeHtml(r.companyName)}</td>
-            <td class="job-cell job-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看岗位详情">${escapeHtml(r.jobName)}</td>
+            <td class="company-cell company-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看公司详情">${detailLinkMarkup(r.companyName, links.company)}</td>
+            <td class="job-cell job-hover-target" data-key="${escapeHtml(r.recordKey)}" tabindex="0" title="悬浮查看岗位详情">${detailLinkMarkup(r.jobName, links.job)}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.applicationDate))}</td>
             <td class="date-cell">${escapeHtml(displayDate(r.updatedDate))}</td>
             <td class="note-cell editable" data-key="${escapeHtml(r.recordKey)}" data-field="note" title="双击编辑备注">${escapeHtml(r.note || '')}</td>
             <td class="recruiter-cell">${escapeHtml(recruiterInfo(r))}</td>
             <td class="status-cell">${escapeHtml(messageStatusText(r.messageStatus))}</td>
             <td class="message-cell${completeConversation(r) ? ' message-hover-target' : ''}" data-key="${escapeHtml(r.recordKey)}"${completeConversation(r) ? ' tabindex="0" title="悬浮查看完整会话"' : ''}>${escapeHtml(r.lastMessage)}</td>
-          </tr>`).join('')}
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>
     ${paginationMarkup()}`;

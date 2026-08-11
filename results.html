@@ -258,6 +258,17 @@
       td.job-cell {
         width: 15%;
       }
+      .record-detail-link {
+        color: inherit;
+        text-decoration: underline;
+        text-decoration-color: #93c5fd;
+        text-underline-offset: 2px;
+      }
+      .record-detail-link:hover,
+      .record-detail-link:focus-visible {
+        color: #1d4ed8;
+        text-decoration-color: currentColor;
+      }
       th.job {
         vertical-align: middle;
       }
@@ -839,7 +850,7 @@
           <input
             id="queryInput"
             type="search"
-            placeholder="查询公司、岗位、招聘者、原消息"
+            placeholder="查询公司、岗位、招聘者、聊天记录"
             style="
               margin-left: auto;
               min-width: 250px;
