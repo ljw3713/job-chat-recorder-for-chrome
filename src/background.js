@@ -134,7 +134,10 @@ async function floatAutoGreetingPanel(tabId, debug) {
 async function dockAutoGreetingPanel(tabId, windowId, debug) {
   if (!Number.isInteger(Number(windowId)) || Number(windowId) <= 0) throw new Error('浮动窗口无效。');
   if (chrome.sidePanel?.setOptions) {
-    await chrome.sidePanel.setOptions({ tabId, path: autoGreetingPanelPath(Boolean(debug)), enabled: true });
+    const ownerTab = await chrome.tabs.get(tabId);
+    await chrome.sidePanel.setOptions({ tabId, enabled: true });
+    await chrome.sidePanel.setOptions({ path: autoGreetingPanelPath(Boolean(debug)), enabled: true });
+    await chrome.sidePanel.open({ windowId: ownerTab.windowId });
   }
   await chrome.windows.remove(Number(windowId));
 }

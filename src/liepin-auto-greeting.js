@@ -6,6 +6,37 @@
   const OPEN_CHAT_PATH = 'com.liepin.im.c.chat.open-chat';
   let activeRun = null;
 
+  function pausedError() {
+    const error = new Error('任务已暂停。');
+    error.name = 'AutoGreetingPausedError';
+    return error;
+  }
+
+  function cancelledError() {
+    const error = new Error('任务已取消。');
+    error.name = 'AutoGreetingCancelledError';
+    return error;
+  }
+
+  function throwIfStopped(run) {
+    if (run?.cancelled) throw cancelledError();
+    if (run?.paused) throw pausedError();
+  }
+
+  function registerAbortController(run) {
+    const controller = new AbortController();
+    if (run) run.abortControllers.add(controller);
+    return controller;
+  }
+
+  function unregisterAbortController(run, controller) {
+    run?.abortControllers.delete(controller);
+  }
+
+  function abortActiveRequests(run) {
+    for (const controller of run?.abortControllers || []) controller.abort();
+  }
+
   function text(value) {
     return String(value ?? '').replace(/\s+/g, ' ').trim();
   }
@@ -120,8 +151,13 @@
     const method = 'POST';
     const headers = apiHeaders(options.json ? 'application/json;charset=UTF-8' : 'application/x-www-form-urlencoded');
     const body = options.body == null ? null : (options.json ? JSON.stringify(options.body) : new URLSearchParams(options.body).toString());
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.max(1000, Number(options.timeoutMs || 30000)));
+    throwIfStopped(options.run);
+    const controller = registerAbortController(options.run);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.max(1000, Number(options.timeoutMs || 30000)));
     try {
       await debugLog(requestDebugText(method, url, headers, body));
       const response = await fetch(url, {
@@ -133,6 +169,7 @@
         signal: controller.signal
       });
       const responseText = await response.text();
+      throwIfStopped(options.run);
       await debugLog(responseDebugText(method, url, response, responseText));
       let payload;
       try { payload = responseText ? JSON.parse(responseText) : {}; } catch (_) {
@@ -145,7 +182,10 @@
       }
       return payload;
     } catch (error) {
+      if (options.run?.cancelled) throw cancelledError();
+      if (options.run?.paused) throw pausedError();
       if (error?.name === 'AbortError') {
+        if (!timedOut) throw error;
         const timeoutError = new Error(`${options.label || '猎聘接口'}等待响应超时。`);
         timeoutError.name = 'TimeoutError';
         await debugLog(`请求异常 ${method} ${url}\n${timeoutError.name}: ${timeoutError.message}`);
@@ -155,11 +195,12 @@
       throw error;
     } finally {
       clearTimeout(timeout);
+      unregisterAbortController(options.run, controller);
     }
   }
 
-  async function fetchExpectations() {
-    const payload = await requestJson(EXPECT_PATH, { label: '目标职位请求' });
+  async function fetchExpectations(run) {
+    const payload = await requestJson(EXPECT_PATH, { label: '目标职位请求', run });
     if (payload?.flag !== 1) throw new Error(payload?.msg || payload?.message || '目标职位接口返回异常。');
     return (Array.isArray(payload?.data?.validExpects) ? payload.data.validExpects : [])
       .map((item) => ({
@@ -177,14 +218,16 @@
     return found;
   }
 
-  async function fetchRecommendedJobs(expectation, config) {
+  async function fetchRecommendedJobs(run, expectation, config) {
     const selectedExpect = { ...(expectation.data || {}), tabTitle: expectation.positionName };
     const candidates = [];
     let operateKind = 'LOGIN';
     let hasNextPage = true;
 
     while (hasNextPage) {
+      throwIfStopped(run);
       const payload = await requestJson(RECOMMEND_PATH, {
+        run,
         label: '推荐岗位请求',
         json: true,
         body: {
@@ -362,35 +405,46 @@
       },
       previousJobInfo: {}
     };
-    const payload = await globalThis.JobChatLiepinExtractor.fetchJobDetail(
-      { externalId: text(job.jobId), detailAccessToken: '' },
-      access,
-      {
-        onLog(entry) {
-          if (entry?.request) {
-            return debugLog(requestDebugText(entry.request.method || 'GET', entry.request.url, entry.request.headers, entry.request.body));
+    throwIfStopped(run);
+    const controller = registerAbortController(run);
+    try {
+      const payload = await globalThis.JobChatLiepinExtractor.fetchJobDetail(
+        { externalId: text(job.jobId), detailAccessToken: '' },
+        access,
+        {
+          signal: controller.signal,
+          onLog(entry) {
+            if (entry?.request) {
+              return debugLog(requestDebugText(entry.request.method || 'GET', entry.request.url, entry.request.headers, entry.request.body));
+            }
+            if (entry?.response) {
+              const response = entry.response;
+              return debugLog([
+                `响应 GET ${response.url || access.detailUrl}`,
+                `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
+                `Headers: ${JSON.stringify(response.headers || {}, null, 2)}`,
+                `Body: ${response.body || ''}`
+              ].join('\n'));
+            }
+            if (entry?.error) {
+              return debugLog(`请求异常 GET ${entry?.request?.url || access.detailUrl}\n${entry.error.name || 'Error'}: ${entry.error.message || String(entry.error)}`);
+            }
+            return debugLog(entry?.message || '猎聘岗位详情请求日志缺失。');
           }
-          if (entry?.response) {
-            const response = entry.response;
-            return debugLog([
-              `响应 GET ${response.url || access.detailUrl}`,
-              `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
-              `Headers: ${JSON.stringify(response.headers || {}, null, 2)}`,
-              `Body: ${response.body || ''}`
-            ].join('\n'));
-          }
-          if (entry?.error) {
-            return debugLog(`请求异常 GET ${entry?.request?.url || access.detailUrl}\n${entry.error.name || 'Error'}: ${entry.error.message || String(entry.error)}`);
-          }
-          return debugLog(entry?.message || '猎聘岗位详情请求日志缺失。');
         }
-      }
-    );
-    return globalThis.JobChatLiepinExtractor.normalizeJobResponse(
-      payload,
-      { externalId: text(job.jobId), detailAccessToken: '' },
-      access
-    );
+      );
+      throwIfStopped(run);
+      return globalThis.JobChatLiepinExtractor.normalizeJobResponse(
+        payload,
+        { externalId: text(job.jobId), detailAccessToken: '' },
+        access
+      );
+    } catch (error) {
+      throwIfStopped(run);
+      throw error;
+    } finally {
+      unregisterAbortController(run, controller);
+    }
   }
 
   async function openChat(run, candidate) {
@@ -400,6 +454,7 @@
     await waitForRate(run, '打招呼接口');
     return requestJson(OPEN_CHAT_PATH, {
       label: '打招呼请求',
+      run,
       body: {
         head_id: headId,
         ck_id: '',
@@ -510,6 +565,8 @@
       try {
         normalized = await fetchDetail(run, candidate);
       } catch (error) {
+        if (error?.name === 'AutoGreetingPausedError' || run.paused) throw error;
+        if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) throw error;
         if (!globalThis.JobChatLiepinExtractor?.isRiskControlError?.(error)) {
           run.progress.failed += 1;
           await report(run, { statusText: error?.message || String(error) });
@@ -551,6 +608,8 @@
       try {
         result = await openChat(run, candidate);
       } catch (error) {
+        if (error?.name === 'AutoGreetingPausedError' || run.paused) throw error;
+        if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) throw error;
         run.progress.failed += 1;
         await releaseReservation(run, candidate, 'unknown', error?.message || String(error));
         run.reservedCandidate = null;
@@ -618,6 +677,7 @@
       resume: null,
       rateWake: null,
       reservedCandidate: null,
+      abortControllers: new Set(),
       deadlineAt: Number(message.deadlineAt || Date.now() + 30 * 60 * 1000),
       timeLimitPaused: Boolean(initialProgress.timeLimitPaused),
       lastRequestAt: 0,
@@ -634,40 +694,49 @@
     };
     activeRun = run;
     try {
-      await report(run);
-      const expectations = await fetchExpectations();
-      const expectation = selectedExpectation(expectations, run.config);
-      await waitForRate(run, '推荐岗位列表');
-      const candidates = await fetchRecommendedJobs(expectation, run.config);
-      const seen = new Set();
-      run.progress.totalDiscovered = candidates.length;
-      await report(run);
-      for (const candidate of candidates) {
-        if (run.progress.succeeded >= Number(run.config.greetingCount || 1)) break;
-        await waitWhilePaused(run);
-        const key = candidateKey(candidate);
-        if (!key || seen.has(key)) {
-          run.progress.skipped += 1;
-          run.progress.processed += 1;
-          await report(run, { statusText: '已跳过：本轮重复岗位' });
-          continue;
+      while (!run.cancelled) {
+        try {
+          await report(run);
+          const expectations = await fetchExpectations(run);
+          const expectation = selectedExpectation(expectations, run.config);
+          await waitForRate(run, '推荐岗位列表');
+          const candidates = await fetchRecommendedJobs(run, expectation, run.config);
+          const seen = new Set();
+          run.progress.totalDiscovered = candidates.length;
+          await report(run);
+          for (const candidate of candidates) {
+            if (run.progress.succeeded >= Number(run.config.greetingCount || 1)) break;
+            await waitWhilePaused(run);
+            const key = candidateKey(candidate);
+            if (!key || seen.has(key)) {
+              run.progress.skipped += 1;
+              run.progress.processed += 1;
+              await report(run, { statusText: '已跳过：本轮重复岗位' });
+              continue;
+            }
+            seen.add(key);
+            try { await processCandidate(run, candidate); }
+            catch (error) {
+              if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) throw error;
+              if (error?.name === 'AutoGreetingPausedError' || run.paused) throw error;
+              run.progress.failed += 1;
+              await report(run, { statusText: error?.message || String(error) });
+            }
+            run.progress.processed += 1;
+            await report(run);
+          }
+          const reached = run.progress.succeeded >= Number(run.config.greetingCount || 1);
+          await report(run, {
+            status: 'completed',
+            currentJobName: '',
+            statusText: reached ? '' : '当前推荐岗位已处理完毕'
+          });
+          break;
+        } catch (error) {
+          if (error?.name !== 'AutoGreetingPausedError' && !run.paused) throw error;
+          await waitWhilePaused(run);
         }
-        seen.add(key);
-        try { await processCandidate(run, candidate); }
-        catch (error) {
-          if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) throw error;
-          run.progress.failed += 1;
-          await report(run, { statusText: error?.message || String(error) });
-        }
-        run.progress.processed += 1;
-        await report(run);
       }
-      const reached = run.progress.succeeded >= Number(run.config.greetingCount || 1);
-      await report(run, {
-        status: 'completed',
-        currentJobName: '',
-        statusText: reached ? '' : '当前推荐岗位已处理完毕'
-      });
     } catch (error) {
       if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) {
         if (run.reservedCandidate) {
@@ -706,7 +775,8 @@
     if (message?.type === 'JOB_CHAT_AUTO_GREETING_PAUSE') {
       if (!activeRun) { sendResponse({ ok: false, error: '当前标签页没有运行中的任务。' }); return; }
       activeRun.paused = true;
-      report(activeRun, { status: 'paused', statusText: '已暂停，将在当前请求完成后停止继续处理' });
+      abortActiveRequests(activeRun);
+      report(activeRun, { status: 'paused', statusText: '已暂停，已停止当前请求并忽略其返回结果' });
       sendResponse({ ok: true });
       return;
     }

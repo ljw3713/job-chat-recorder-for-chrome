@@ -30,6 +30,7 @@ const saveBtn = document.getElementById('saveBtn');
 const overviewBtn = document.getElementById('overviewBtn');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
 const ignoreSelectedBtn = document.getElementById('ignoreSelectedBtn');
+const mergeDuplicatesBtn = document.getElementById('mergeDuplicatesBtn');
 const ignoredRecordsBtn = document.getElementById('ignoredRecordsBtn');
 const cancelSyncBtn = document.getElementById('cancelSyncBtn');
 const resumeSyncBtn = document.getElementById('resumeSyncBtn');
@@ -107,7 +108,7 @@ const configuredRatingPromptThreshold = Number(ratingPromptConfig.clickThreshold
 const RATING_PROMPT_CLICK_THRESHOLD = Number.isFinite(configuredRatingPromptThreshold)
   ? Math.max(0, Math.floor(configuredRatingPromptThreshold))
   : 10;
-const CHROME_WEB_STORE_URL = String(ratingPromptConfig.storeUrl || '');
+const RATING_STORE_URL = String(ratingPromptConfig.storeUrl || '');
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
 const {
@@ -119,6 +120,7 @@ const {
   normalizeJobRef,
   normalizeJobInfo,
   normalizeConversation,
+  mergeConversation,
   isCompleteJobInfo
 } = globalThis.JobChatRecords;
 
@@ -419,12 +421,14 @@ function configurePageMode() {
     saveBtn.style.display = '';
     if (requestLogsBtn) requestLogsBtn.style.display = sendLogEnabled ? '' : 'none';
     if (importCsvBtn) importCsvBtn.style.display = 'none';
+    if (mergeDuplicatesBtn) mergeDuplicatesBtn.style.display = 'none';
     overviewBtn.textContent = '查看总记录';
     pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。备注列可双击编辑，岗位列可悬浮查看详情。';
   } else {
     saveBtn.style.display = 'none';
     if (requestLogsBtn) requestLogsBtn.style.display = 'none';
     if (importCsvBtn) importCsvBtn.style.display = '';
+    if (mergeDuplicatesBtn) mergeDuplicatesBtn.style.display = '';
     overviewBtn.textContent = '刷新总览';
     pageHint.textContent = debugDataEnabled
       ? '调试数据模式：JSON 和 CSV 会包含完整内部数据；CSV 导入会按唯一索引新增记录或覆盖已有记录的内部数据。'
@@ -846,6 +850,74 @@ function normalizedIgnoredRecords() {
     byKey.set(recordKey, { ...record, recordKey });
   });
   return Array.from(byKey.values()).map((record, index) => ({ ...record, index: index + 1 }));
+}
+
+function bossRecordKeyJobId(record) {
+  const parts = recordKeyOf(record).toLowerCase().split('|');
+  return parts[0] === 'boss' ? normalizeText(parts[2]) : '';
+}
+
+function bossExternalId(record) {
+  return normalizeText(record?.jobRef?.externalId).toLowerCase();
+}
+
+function isBossExternalIdRecordKey(record) {
+  const externalId = bossExternalId(record);
+  return Boolean(externalId && bossRecordKeyJobId(record) === externalId);
+}
+
+function mergeBossDuplicateRecords(jobIdRecord, externalIdRecord) {
+  const jobIdHasDetails = isResolvedJobInfo(jobIdRecord);
+  const externalIdHasDetails = isResolvedJobInfo(externalIdRecord);
+  return {
+    ...externalIdRecord,
+    ...jobIdRecord,
+    recordKey: jobIdRecord.recordKey,
+    boss: { ...(externalIdRecord.boss || {}), ...(jobIdRecord.boss || {}) },
+    jobRef: { ...(externalIdRecord.jobRef || {}), ...(jobIdRecord.jobRef || {}) },
+    jobInfo: jobIdHasDetails || !externalIdHasDetails ? jobIdRecord.jobInfo : externalIdRecord.jobInfo,
+    companyKey: jobIdRecord.companyKey || externalIdRecord.companyKey || '',
+    conversation: mergeConversation(externalIdRecord.conversation, jobIdRecord.conversation),
+    note: jobIdRecord.note || externalIdRecord.note || '',
+    applicationDate: jobIdRecord.applicationDate || externalIdRecord.applicationDate || '',
+    updatedDate: jobIdRecord.updatedDate || externalIdRecord.updatedDate || '',
+    createdAt: jobIdRecord.createdAt || externalIdRecord.createdAt || ''
+  };
+}
+
+function mergeBossExternalIdDuplicates(records) {
+  const byExternalId = new Map();
+  records.forEach((record) => {
+    if (recordSiteKey(record) !== 'boss') return;
+    const externalId = bossExternalId(record);
+    if (!externalId) return;
+    const group = byExternalId.get(externalId) || [];
+    group.push(record);
+    byExternalId.set(externalId, group);
+  });
+
+  const mergedByKey = new Map();
+  const removedKeys = new Set();
+  byExternalId.forEach((group) => {
+    const jobIdRecord = group.find((record) => !isBossExternalIdRecordKey(record) && bossRecordKeyJobId(record));
+    if (!jobIdRecord) return;
+    const externalIdRecords = group.filter(isBossExternalIdRecordKey);
+    if (!externalIdRecords.length) return;
+    let merged = jobIdRecord;
+    externalIdRecords.forEach((record) => {
+      if (record.recordKey === jobIdRecord.recordKey) return;
+      merged = mergeBossDuplicateRecords(merged, record);
+      removedKeys.add(record.recordKey);
+    });
+    mergedByKey.set(jobIdRecord.recordKey, merged);
+  });
+
+  return {
+    records: records
+      .filter((record) => !removedKeys.has(record.recordKey))
+      .map((record) => mergedByKey.get(record.recordKey) || record),
+    mergedCount: removedKeys.size
+  };
 }
 
 async function ignoreSelectedRecords() {
@@ -1411,7 +1483,7 @@ function liepinJobDetailUrl(record) {
 function recordDetailLinks(record) {
   const siteKey = recordSiteKey(record);
   if (siteKey === 'boss') {
-    const jobId = safePlatformId(record?.boss?.jobId);
+    const jobId = safePlatformId(record?.jobRef?.externalId);
     const companyId = companyExternalId(record, siteKey);
     return {
       job: jobId ? `https://www.zhipin.com/job_detail/${jobId}.html` : '',
@@ -1810,6 +1882,23 @@ if (ignoreSelectedBtn) {
   });
 }
 
+if (mergeDuplicatesBtn) {
+  mergeDuplicatesBtn.addEventListener('click', async () => {
+    if (mode !== 'overview') return;
+    const merged = mergeBossExternalIdDuplicates(allRecords);
+    if (!merged.mergedCount) {
+      alert('没有找到可合并的重复记录。');
+      return;
+    }
+    if (!confirm(`确认合并 ${merged.mergedCount} 条重复记录？`)) return;
+    allRecords = merged.records;
+    selectedKeys.clear();
+    await persistCurrentRecords();
+    populateFilters();
+    renderTable();
+  });
+}
+
 if (ignoredRecordsBtn) {
   ignoredRecordsBtn.addEventListener('click', () => {
     renderIgnoredRecordsModal();
@@ -1941,6 +2030,7 @@ async function updateRatingPromptState(updates) {
 
 async function countSyncClickAndMaybeShowRatingPrompt() {
   try {
+    if (!RATING_STORE_URL) return;
     const stored = await chrome.storage.local.get([RATING_PROMPT_STATE_KEY]);
     const current = stored[RATING_PROMPT_STATE_KEY] || {};
     if (current.promptedAt) return;
@@ -1981,8 +2071,8 @@ if (confirmRatingPromptBtn) {
       action: 'store_opened',
       handledAt: new Date().toISOString()
     }).catch(() => {});
-    if (CHROME_WEB_STORE_URL) {
-      await chrome.tabs.create({ url: CHROME_WEB_STORE_URL, active: true }).catch(() => {});
+    if (RATING_STORE_URL) {
+      await chrome.tabs.create({ url: RATING_STORE_URL, active: true }).catch(() => {});
     }
   });
 }

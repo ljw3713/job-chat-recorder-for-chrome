@@ -1,6 +1,6 @@
 # 直聘|猎聘 沟通助手
 
-一个用于同步、整理招聘平台沟通记录，并向已有联系人批量发送文本消息的 Chrome 扩展。当前支持 BOSS 直聘 `zhipin.com` 和猎聘 `liepin.com`。
+一个用于同步、整理招聘平台沟通记录，并向已有联系人批量发送文本消息的 Chrome 和 Microsoft Edge 扩展。当前支持 BOSS 直聘 `zhipin.com` 和猎聘 `liepin.com`。
 
 ## 功能
 
@@ -44,7 +44,10 @@
 在已登录的 BOSS 或猎聘标签页打开“发送消息”面板后，扩展会读取当前平台的目标职位，
 按薪资、年限、在线状态、关键词和排除公司等配置串行筛选推荐岗位，并对匹配岗位调用平台
 默认招呼语。目标职位按平台分别保存；任务支持限速、暂停、继续、取消、30 分钟自动暂停和
-发送结果展示。
+发送结果展示。停靠面板以浏览器窗口为单位保持，切换标签页后返回不会自动收起。
+
+猎聘任务点击“暂停”会立即中止当前网络请求；若服务器仍返回该请求的结果，扩展会忽略该结果，
+不会继续发送或保存。点击“继续”后会重新读取推荐岗位并从未完成的流程继续。
 
 猎聘的薪资、年限、在线状态和公司名称过滤分别只使用推荐列表中的 `job.salary`、
 `job.requireWorkYears`、`recruiter.imStatus` 和 `comp.fullCompanyName`，不为这四项进入详情页
@@ -151,7 +154,7 @@ await chrome.storage.local.remove('jobChatRatingPromptState')
 需要快速测试时，可以临时把 `src/runtime-config.js` 中的 `clickThreshold` 改为
 `0`，并删除已有状态；测试结束后恢复为 `10`。
 
-## Chrome 商店打包
+## Chrome 与 Edge 商店打包
 
 打包环境需要 Node.js 18 或更高版本。首次打包先安装锁定的开发依赖：
 
@@ -159,21 +162,30 @@ await chrome.storage.local.remove('jobChatRatingPromptState')
 npm ci
 ```
 
-打包产物会输出到 `dist/job-chat-recorder-v{manifest版本号}.zip`。源码中的 `manifest.name` 带有 `-dev` 后缀，便于区分本地加载的开发版；正式打包时脚本会自动移除该后缀。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
+源码中的 `manifest.name` 带有 `-dev` 后缀，便于区分本地加载的开发版；正式打包时脚本会自动移除该后缀。可分别生成两个商店的上传包：
+
+```bash
+npm run build        # dist/job-chat-recorder-chrome-v{version}.zip
+npm run build:edge   # dist/job-chat-recorder-edge-v{version}.zip
+npm run build:all    # 同时生成两个包
+```
+
+Chrome 包保留 `minimum_chrome_version` 和 Chrome Web Store 评分链接；Edge 包会移除该最低版本字段，且默认不包含 Chrome 商店链接。脚本只会打包扩展运行和商店上传必需的文件，包括 `manifest.json`、页面文件、脚本文件和 manifest 引用的图标，不会包含源码管理文件、README、CHANGELOG、打包脚本或历史产物。
 
 打包阶段使用锁定版本的 `esbuild` 压缩全部 JavaScript：删除注释和多余空白，并进行安全的语法压缩；不生成 source map，也不执行字符串加密、控制流改写等代码混淆。由于扩展的多个脚本通过全局函数协作，压缩过程会保留标识符名称，避免跨文件调用失效。源文件不会被修改，压缩只发生在临时打包目录中。
 
 命令完成后会输出 JavaScript 压缩前后的字节数。正式包还会把 `src/runtime-config.js` 中的 Debug 日志默认值关闭；可以使用以下命令检查压缩包完整性：
 
 ```bash
-unzip -t dist/job-chat-recorder-v{manifest版本号}.zip
+unzip -t dist/job-chat-recorder-chrome-v{manifest版本号}.zip
+unzip -t dist/job-chat-recorder-edge-v{manifest版本号}.zip
 ```
 
 匿名统计使用 GA4 Measurement Protocol 直连。执行以下命令后，脚本会询问
 Measurement ID，并隐藏输入 API Secret：
 
 ```bash
-npm run package
+npm run package:chrome
 ```
 
 脚本不会把输入写入源码、命令参数或构建日志。CI 等非交互环境可以提前设置：
@@ -186,9 +198,10 @@ JOB_CHAT_GA4_API_SECRET=你的 Measurement Protocol API Secret
 需要明确生成不包含 GA4 配置的包时，使用强制跳过参数：
 
 ```bash
-npm run package -- --skip-ga4
-# 或
-npm run package:skip-ga4
+npm run package:chrome -- --skip-ga4
+npm run package:edge -- --skip-ga4
+# 或同时生成两个包
+npm run package:all -- --skip-ga4
 ```
 
 `--skip-ga4` 会忽略当前环境中已有的 GA4 变量，并输出统计关闭的包。没有该参数时，

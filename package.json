@@ -1,10 +1,17 @@
 {
   "scripts": {
     "check": "node scripts/check-extension.js",
-    "build": "node scripts/package-extension.js --skip-ga4",
-    "ci": "npm run check && npm run build",
-    "package": "node scripts/package-with-ga4.js",
-    "package:skip-ga4": "node scripts/package-extension.js --skip-ga4"
+    "build": "node scripts/package-extension.js --browser=chrome --skip-ga4",
+    "build:edge": "node scripts/package-extension.js --browser=edge --skip-ga4",
+    "build:all": "node scripts/package-extension.js --browser=all --skip-ga4",
+    "ci": "npm run check && npm run build:all",
+    "package": "node scripts/package-with-ga4.js --browser=chrome",
+    "package:chrome": "node scripts/package-with-ga4.js --browser=chrome",
+    "package:edge": "node scripts/package-with-ga4.js --browser=edge",
+    "package:all": "node scripts/package-with-ga4.js --browser=all",
+    "package:skip-ga4": "node scripts/package-extension.js --browser=chrome --skip-ga4",
+    "package:edge:skip-ga4": "node scripts/package-extension.js --browser=edge --skip-ga4",
+    "package:all:skip-ga4": "node scripts/package-extension.js --browser=all --skip-ga4"
   },
   "devDependencies": {
     "esbuild": "0.25.12"

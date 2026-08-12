@@ -5,6 +5,13 @@ const { spawnSync } = require('child_process');
 const rootDir = path.resolve(__dirname, '..');
 const packageScript = path.join(__dirname, 'package-extension.js');
 const skipGa4 = process.argv.includes('--skip-ga4');
+const browserArguments = process.argv.filter((argument) => argument.startsWith('--browser='));
+
+if (browserArguments.length > 1) {
+  throw new Error('Only one --browser argument is allowed.');
+}
+
+const browserArgs = browserArguments;
 
 function askVisible(question) {
   if (!process.stdin.isTTY) {
@@ -94,7 +101,7 @@ function runPackage(environment, args = []) {
 
 async function main() {
   if (skipGa4) {
-    runPackage(process.env, ['--skip-ga4']);
+    runPackage(process.env, ['--skip-ga4', ...browserArgs]);
     return;
   }
 
@@ -112,7 +119,7 @@ async function main() {
     ...process.env,
     JOB_CHAT_GA4_MEASUREMENT_ID: measurementId,
     JOB_CHAT_GA4_API_SECRET: apiSecret
-  });
+  }, browserArgs);
 }
 
 main().catch((error) => {

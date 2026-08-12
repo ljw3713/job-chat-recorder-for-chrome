@@ -1126,8 +1126,9 @@ panelModeButton.addEventListener('click', async () => {
     }
     if (!chrome.sidePanel?.open) throw new Error('当前 Chrome 版本不支持停靠到侧边栏。');
     const path = `auto-message-panel.html${DEBUG_ENABLED ? '?debug=1' : ''}`;
-    await chrome.sidePanel.setOptions({ tabId: activeTab.id, path, enabled: true });
-    await chrome.sidePanel.open({ tabId: activeTab.id });
+    const ownerTab = await chrome.tabs.get(activeTab.id);
+    await chrome.sidePanel.setOptions({ path, enabled: true });
+    await chrome.sidePanel.open({ windowId: ownerTab.windowId });
     const popupWindow = await chrome.windows.getCurrent();
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_AUTO_GREETING_PANEL_DOCK',

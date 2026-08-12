@@ -101,8 +101,19 @@
     return bossRecordKeyParts(bossIdOfItem(item), item?.jobId);
   }
 
+  function bossItemExternalRecordKey(item) {
+    return bossRecordKeyParts(bossIdOfItem(item), item?.encryptJobId);
+  }
+
   function bossRecordRecordKey(record) {
     return bossRecordKeyParts(record?.boss?.peerKey || record?.boss?.encryptBossId || record?.boss?.bossId, record?.boss?.jobId);
+  }
+
+  function bossRecordExternalRecordKey(record) {
+    return bossRecordKeyParts(
+      record?.boss?.peerKey || record?.boss?.encryptBossId || record?.boss?.bossId,
+      record?.jobRef?.externalId
+    );
   }
 
   function bossRecordKeyPartsFromStoredKey(record) {
@@ -113,6 +124,18 @@
 
   function bossRecordJobId(record) {
     return normalizeText(record?.boss?.jobId || bossRecordKeyPartsFromStoredKey(record).jobId).toLowerCase();
+  }
+
+  function bossRecordUsesExternalIdKey(record) {
+    const storedJobId = bossRecordKeyPartsFromStoredKey(record).jobId;
+    const externalId = normalizeText(record?.jobRef?.externalId).toLowerCase();
+    return Boolean(storedJobId && externalId && storedJobId === externalId);
+  }
+
+  function migrateBossRecordKeyToItemJobId(record, item) {
+    if (!bossRecordUsesExternalIdKey(record)) return normalizeText(record?.recordKey);
+    const keyParts = bossItemRecordKey(item);
+    return keyParts ? `boss|${keyParts}` : normalizeText(record?.recordKey);
   }
 
   function bossRelationFriendIdOfItem(item) {
@@ -233,9 +256,10 @@
 
   function addBossRecordKeys(keys, record) {
     const primaryKey = bossRecordRecordKey(record);
+    const externalPrimaryKey = bossRecordExternalRecordKey(record);
     const securityId = record?.boss?.chatSecurityId || record?.boss?.securityId;
     const friendId = record?.boss?.encryptFriendId || record?.boss?.friendId;
-    [primaryKey, securityId, friendId, record?.recordKey].forEach((key) => addBossKeyVariants(keys, key));
+    [primaryKey, externalPrimaryKey, securityId, friendId, record?.recordKey].forEach((key) => addBossKeyVariants(keys, key));
     if (!primaryKey && !securityId && !friendId) addBossKeyVariants(keys, record?.recordKey);
     if (primaryKey || securityId || friendId) return;
     [
@@ -258,9 +282,10 @@
   function bossItemKeys(item) {
     const keys = new Set();
     const primaryKey = bossItemRecordKey(item);
+    const externalPrimaryKey = bossItemExternalRecordKey(item);
     const securityId = item?.securityId;
     const friendId = item?.encryptFriendId || item?.friendId;
-    [primaryKey, securityId, friendId, bossIdOfItem(item)].forEach((key) => addBossKeyVariants(keys, key));
+    [primaryKey, externalPrimaryKey, securityId, friendId, bossIdOfItem(item)].forEach((key) => addBossKeyVariants(keys, key));
     [
       item?.encryptBossId,
       item?.encryptUid,
@@ -950,8 +975,10 @@
     const jobName = bossJobText(job.jobName || item.jobName || fallbackJobName, job.salaryDesc || '') || existingRecord?.jobName || '';
     const companyName = htmlDecode(data.companyName || job.brandName || item.brandName || '') || existingRecord?.companyName || '';
     const ts = Number(item.lastMessageInfo?.msgTime || item.updateTime || item.lastTS || Date.now());
+    const migratedRecordKey = migrateBossRecordKeyToItemJobId(existingRecord, item);
     const record = {
       ...(existingRecord || {}),
+      ...(migratedRecordKey ? { recordKey: migratedRecordKey } : {}),
       index: index + 1,
       time: formatDateTime(new Date(ts)),
       updatedAt: new Date().toISOString(),

@@ -202,11 +202,10 @@ autoMessageBtn.addEventListener('click', async (event) => {
     }
     const debugEnabled = Boolean(globalThis.JobChatRuntimeConfig?.enableDebugLog || event.ctrlKey);
     await chrome.sidePanel.setOptions({
-      tabId: tab.id,
       path: `auto-message-panel.html${debugEnabled ? '?debug=1' : ''}`,
       enabled: true
     });
-    await chrome.sidePanel.open({ tabId: tab.id });
+    await chrome.sidePanel.open({ windowId: tab.windowId });
     window.close();
   } catch (error) {
     errorBox.textContent = error?.message || String(error);

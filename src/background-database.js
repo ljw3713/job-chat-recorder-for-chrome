@@ -36,18 +36,34 @@
     return keys;
   }
 
+  function bossExternalIdentity(record) {
+    const siteKey = normalizeText(record?.siteKey || '');
+    const sourceName = normalizeText(record?.sourceName || '');
+    if (siteKey !== 'boss' && sourceName !== 'BOSS直聘') return '';
+    const bossId = normalizeText(record?.boss?.encryptBossId || record?.boss?.peerKey || record?.boss?.bossId).toLowerCase();
+    const externalId = normalizeText(record?.jobRef?.externalId).toLowerCase();
+    return bossId && externalId ? `${bossId}|${externalId}` : '';
+  }
+
   function mergeRecordLists(existing, incoming) {
     const byKey = new Map();
-    normalizeStoredRecords(existing).forEach((record) => byKey.set(record.recordKey, record));
+    const byBossExternalIdentity = new Map();
+    normalizeStoredRecords(existing).forEach((record) => {
+      byKey.set(record.recordKey, record);
+      const externalIdentity = bossExternalIdentity(record);
+      if (externalIdentity) byBossExternalIdentity.set(externalIdentity, record);
+    });
 
     let inserted = 0;
     let updated = 0;
 
     incoming.forEach((record) => {
-      const old = byKey.get(record.recordKey);
+      const externalIdentity = bossExternalIdentity(record);
+      const old = byKey.get(record.recordKey) || (externalIdentity ? byBossExternalIdentity.get(externalIdentity) : null);
       if (old) {
         const conversation = mergeConversation(old.conversation, record.conversation);
-        byKey.set(record.recordKey, {
+        if (old.recordKey !== record.recordKey) byKey.delete(old.recordKey);
+        const mergedRecord = {
           ...old,
           ...record,
           boss: { ...(old.boss || {}), ...(record.boss || {}) },
@@ -59,14 +75,19 @@
           updatedDate: record.updatedDate || old.updatedDate,
           createdAt: old.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        });
+        };
+        byKey.set(record.recordKey, mergedRecord);
+        const mergedExternalIdentity = bossExternalIdentity(mergedRecord);
+        if (mergedExternalIdentity) byBossExternalIdentity.set(mergedExternalIdentity, mergedRecord);
         updated += 1;
       } else {
-        byKey.set(record.recordKey, {
+        const insertedRecord = {
           ...record,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        });
+        };
+        byKey.set(record.recordKey, insertedRecord);
+        if (externalIdentity) byBossExternalIdentity.set(externalIdentity, insertedRecord);
         inserted += 1;
       }
     });
