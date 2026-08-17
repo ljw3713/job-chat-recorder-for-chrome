@@ -20,6 +20,7 @@ const packageFiles = [
   'src/results-database.js',
   'src/background.js',
   'src/background-database.js',
+  'src/deepseek-job-matcher.js',
   'src/analytics.js',
   'src/runtime-config.js',
   'src/shared-utils.js',

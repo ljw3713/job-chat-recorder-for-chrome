@@ -1,4 +1,5 @@
 const CONFIG_STORAGE_KEY = 'jobChatAutoMessageConfig';
+const DEEPSEEK_API_KEY_STORAGE_KEY = 'jobChatDeepSeekApiKey';
 const RUN_STORAGE_KEY = 'jobChatAutoGreetingRun';
 const DEBUG_LOG_STORAGE_KEY = 'jobChatAutoGreetingLogsByTab';
 const BOSS_FILTER_OPTIONS_CACHE_KEY = 'jobChatBossFilterOptionsCache';
@@ -15,6 +16,14 @@ const CONFIG_DEFAULTS = {
   experienceMaxYears: null,
   technicalKeywords: '',
   technicalMatchPercent: 50,
+  aiMatchEnabled: false,
+  aiResumeEnabled: false,
+  aiResume: '',
+  aiResumePromptTemplate: '候选人的简历如下：\n${resume}\n\n请根据候选人的技能、工作经历、项目经验和岗位要求，判断该岗位是否适合候选人。不满足关键要求时判定为不匹配。',
+  aiExpectedJobEnabled: false,
+  aiExpectedJob: '',
+  aiExpectedJobPromptTemplate: '候选人期待的岗位是：\n${expectedJob}\n\n请判断当前岗位的职位方向、工作内容和要求是否符合上述期待。方向明显不一致时判定为不匹配。',
+  aiOtherPrompt: '',
   jobKeywords: '',
   jobMatchPercent: 50,
   jobFilterKeywords: '',
@@ -64,6 +73,18 @@ const bossSourceModeTabs = document.getElementById('bossSourceModeTabs');
 const bossSearchQuery = document.getElementById('bossSearchQuery');
 const bossRecommendFilterSection = document.getElementById('bossRecommendFilterSection');
 const bossRecommendFilterList = document.getElementById('bossRecommendFilterList');
+const aiMatchEnabledInput = document.getElementById('aiMatchEnabled');
+const aiMatchToggleButton = document.getElementById('aiMatchToggle');
+const aiMatchPanel = document.getElementById('aiMatchPanel');
+const deepSeekApiKeyInput = document.getElementById('deepSeekApiKey');
+const aiResumeEnabledInput = document.getElementById('aiResumeEnabled');
+const aiResumeInput = document.getElementById('aiResume');
+const aiResumePromptInput = document.getElementById('aiResumePromptTemplate');
+const aiExpectedJobEnabledInput = document.getElementById('aiExpectedJobEnabled');
+const aiExpectedJobInput = document.getElementById('aiExpectedJob');
+const aiExpectedJobPromptInput = document.getElementById('aiExpectedJobPromptTemplate');
+const aiOtherPromptInput = document.getElementById('aiOtherPrompt');
+const aiPromptPreview = document.getElementById('aiPromptPreview');
 const viewFields = {
   salary: document.getElementById('viewSalary'),
   experience: document.getElementById('viewExperience'),
@@ -79,6 +100,9 @@ const viewFields = {
 
 let activeTab = null;
 let savedConfig = null;
+let deepSeekApiKey = '';
+let aiConfigSaveTimer = null;
+let apiKeySaveTimer = null;
 let renderedRunStatus = '';
 
 function isConfigEditingLocked() {
@@ -151,6 +175,14 @@ async function configureDebugLogging() {
 
 function normalizeConfig(config = {}) {
   const normalized = { ...CONFIG_DEFAULTS, ...config };
+  normalized.aiMatchEnabled = Boolean(normalized.aiMatchEnabled);
+  normalized.aiResumeEnabled = Boolean(normalized.aiResumeEnabled);
+  normalized.aiResume = String(normalized.aiResume || '');
+  normalized.aiResumePromptTemplate = String(normalized.aiResumePromptTemplate || CONFIG_DEFAULTS.aiResumePromptTemplate);
+  normalized.aiExpectedJobEnabled = Boolean(normalized.aiExpectedJobEnabled);
+  normalized.aiExpectedJob = String(normalized.aiExpectedJob || '');
+  normalized.aiExpectedJobPromptTemplate = String(normalized.aiExpectedJobPromptTemplate || CONFIG_DEFAULTS.aiExpectedJobPromptTemplate);
+  normalized.aiOtherPrompt = String(normalized.aiOtherPrompt || '');
   const filter = normalized.bossRecommendFilters && typeof normalized.bossRecommendFilters === 'object'
     ? normalized.bossRecommendFilters : {};
   const option = (value) => {
@@ -172,6 +204,75 @@ function normalizeConfig(config = {}) {
   delete normalized.greetingRatePerMinute;
   delete normalized.jobFilterMatchPercent;
   return normalized;
+}
+
+function composeAiPrompt(config) {
+  const parts = [];
+  if (config.aiResumeEnabled && config.aiResume.trim()) {
+    parts.push(config.aiResumePromptTemplate.replaceAll('${resume}', config.aiResume.trim()).trim());
+  }
+  if (config.aiExpectedJobEnabled && config.aiExpectedJob.trim()) {
+    parts.push(config.aiExpectedJobPromptTemplate.replaceAll('${expectedJob}', config.aiExpectedJob.trim()).trim());
+  }
+  if (config.aiOtherPrompt.trim()) parts.push(config.aiOtherPrompt.trim());
+  if (parts.length) parts.push('待匹配岗位信息：\n${jobInfo}');
+  return parts.filter(Boolean).join('\n\n');
+}
+
+function aiConfigFromInputs() {
+  return normalizeConfig({
+    ...savedConfig,
+    aiMatchEnabled: aiMatchEnabledInput.checked,
+    aiResumeEnabled: aiResumeEnabledInput.checked,
+    aiResume: aiResumeInput.value,
+    aiResumePromptTemplate: aiResumePromptInput.value,
+    aiExpectedJobEnabled: aiExpectedJobEnabledInput.checked,
+    aiExpectedJob: aiExpectedJobInput.value,
+    aiExpectedJobPromptTemplate: aiExpectedJobPromptInput.value,
+    aiOtherPrompt: aiOtherPromptInput.value
+  });
+}
+
+function renderAiDependentState(config) {
+  const locked = isConfigEditingLocked();
+  aiMatchEnabledInput.disabled = locked;
+  aiMatchToggleButton.disabled = false;
+  deepSeekApiKeyInput.disabled = locked;
+  aiResumeEnabledInput.disabled = locked;
+  aiResumeInput.disabled = locked;
+  aiResumePromptInput.disabled = locked || !config.aiResumeEnabled;
+  aiExpectedJobEnabledInput.disabled = locked;
+  aiExpectedJobInput.disabled = locked;
+  aiExpectedJobPromptInput.disabled = locked || !config.aiExpectedJobEnabled;
+  aiOtherPromptInput.disabled = locked;
+  aiPromptPreview.value = composeAiPrompt(config) || '尚未配置参与匹配的提示词。';
+}
+
+function renderAiConfig(config) {
+  aiMatchEnabledInput.checked = config.aiMatchEnabled;
+  deepSeekApiKeyInput.value = deepSeekApiKey;
+  aiResumeEnabledInput.checked = config.aiResumeEnabled;
+  aiResumeInput.value = config.aiResume;
+  aiResumePromptInput.value = config.aiResumePromptTemplate;
+  aiExpectedJobEnabledInput.checked = config.aiExpectedJobEnabled;
+  aiExpectedJobInput.value = config.aiExpectedJob;
+  aiExpectedJobPromptInput.value = config.aiExpectedJobPromptTemplate;
+  aiOtherPromptInput.value = config.aiOtherPrompt;
+  renderAiDependentState(config);
+}
+
+async function persistAiConfig() {
+  clearTimeout(aiConfigSaveTimer);
+  aiConfigSaveTimer = null;
+  if (!savedConfig) return;
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: savedConfig });
+}
+
+async function persistDeepSeekApiKey() {
+  clearTimeout(apiKeySaveTimer);
+  apiKeySaveTimer = null;
+  deepSeekApiKey = deepSeekApiKeyInput.value.trim();
+  await chrome.storage.local.set({ [DEEPSEEK_API_KEY_STORAGE_KEY]: deepSeekApiKey });
 }
 
 function hasFilterOptions(options) {
@@ -437,6 +538,23 @@ function validateConfig(config, requireTarget = true) {
   if (!Number.isInteger(config.requestRatePerMinute) || config.requestRatePerMinute < 1 || config.requestRatePerMinute > 60) {
     throw new Error('请求速率必须是 1 到 60 之间的整数。');
   }
+  if (config.aiMatchEnabled) {
+    if (!deepSeekApiKey.trim()) throw new Error('启用 AI匹配前，请填写 DeepSeek API Key。');
+    const hasResume = config.aiResumeEnabled && config.aiResume.trim();
+    const hasExpectedJob = config.aiExpectedJobEnabled && config.aiExpectedJob.trim();
+    const hasOther = config.aiOtherPrompt.trim();
+    if (!hasResume && !hasExpectedJob && !hasOther) throw new Error('请至少配置简历、期待岗位或其他匹配要求。');
+    if (config.aiResumeEnabled) {
+      if (!config.aiResume.trim()) throw new Error('已启用“我的简历”，请填写简历内容。');
+      if (!config.aiResumePromptTemplate.trim()) throw new Error('请填写简历匹配提示词。');
+      if (!config.aiResumePromptTemplate.includes('${resume}')) throw new Error('简历匹配提示词必须包含 ${resume}。');
+    }
+    if (config.aiExpectedJobEnabled) {
+      if (!config.aiExpectedJob.trim()) throw new Error('已启用“期待岗位”，请填写期待岗位。');
+      if (!config.aiExpectedJobPromptTemplate.trim()) throw new Error('请填写期待岗位提示词。');
+      if (!config.aiExpectedJobPromptTemplate.includes('${expectedJob}')) throw new Error('期待岗位提示词必须包含 ${expectedJob}。');
+    }
+  }
 }
 
 function selectConfiguredExpectation(config = {}) {
@@ -550,6 +668,7 @@ function renderConfigView(config) {
   viewFields.companyFilterKeywords.textContent = keywordText(config.companyFilterKeywords);
   viewFields.greetingCount.textContent = config.greetingCount == null ? '未设置' : `${config.greetingCount} 人`;
   viewFields.requestRatePerMinute.textContent = `${config.requestRatePerMinute} 次/分钟`;
+  renderAiConfig(config);
   renderTargetExpectChoices();
   renderLiepinRecommendSort(config);
   renderBossRecommendFilters(config);
@@ -717,13 +836,16 @@ function showSentInfoCard(target, entry, type) {
   clearTimeout(sentInfoHideTimer);
   sentMessageInfoCard.replaceChildren();
   const isCompany = type === 'company';
+  const isAiMatch = type === 'ai-match';
   const title = document.createElement('h3');
-  title.textContent = String(isCompany ? (entry.companyName || '公司详情') : (entry.jobName || '岗位详情'));
+  title.textContent = String(isCompany ? (entry.companyName || '公司详情') : (isAiMatch ? 'AI匹配结果' : (entry.jobName || '岗位详情')));
   sentMessageInfoCard.appendChild(title);
   if (isCompany) {
     const summary = [entry.companyIndustry ? `行业：${entry.companyIndustry}` : '', entry.companyScale ? `规模：${entry.companyScale}` : ''].filter(Boolean).join(' · ');
     if (summary) appendSentInfoText(sentMessageInfoCard, 'job-info-meta', summary);
     appendSentInfoText(sentMessageInfoCard, 'detail', String(entry.companyDetail || '暂无公司介绍。'));
+  } else if (isAiMatch) {
+    appendSentInfoText(sentMessageInfoCard, 'detail', String(entry.aiMatchResult || '匹配通过'));
   } else {
     const summary = [entry.salary, entry.jobLocation, entry.jobExperience, entry.jobEducation].filter(Boolean).join(' · ');
     if (summary) appendSentInfoText(sentMessageInfoCard, 'job-info-meta', summary);
@@ -752,7 +874,7 @@ function showSentInfoCard(target, entry, type) {
   sentMessageInfoCard.style.top = `${top}px`;
 }
 
-function renderSentMessages(messages) {
+function renderSentMessages(messages, aiMatchEnabled = false) {
   sentMessagesList.replaceChildren();
   const entries = Array.isArray(messages) ? messages : [];
   if (!entries.length) {
@@ -767,6 +889,7 @@ function renderSentMessages(messages) {
     row.className = 'sent-message';
     const main = document.createElement('div');
     main.className = 'sent-message-main';
+    main.classList.toggle('ai-match-enabled', aiMatchEnabled);
     const company = document.createElement('span');
     company.className = 'sent-message-company';
     company.textContent = String(entry.companyName || '未知公司').trim();
@@ -781,6 +904,17 @@ function renderSentMessages(messages) {
     salary.className = 'sent-message-salary';
     salary.textContent = String(entry.salary || '薪资未提供');
     main.append(company, job, salary);
+    if (aiMatchEnabled) {
+      const aiResult = document.createElement('span');
+      aiResult.className = 'sent-message-ai-result';
+      aiResult.textContent = String(entry.aiMatchResult || '匹配通过').trim();
+      aiResult.tabIndex = 0;
+      main.appendChild(aiResult);
+      aiResult.addEventListener('mouseenter', () => showSentInfoCard(aiResult, entry, 'ai-match'));
+      aiResult.addEventListener('mouseleave', scheduleSentInfoCardHide);
+      aiResult.addEventListener('focus', () => showSentInfoCard(aiResult, entry, 'ai-match'));
+      aiResult.addEventListener('blur', scheduleSentInfoCardHide);
+    }
     row.append(main);
     company.addEventListener('mouseenter', () => showSentInfoCard(company, entry, 'company'));
     company.addEventListener('mouseleave', scheduleSentInfoCardHide);
@@ -818,7 +952,7 @@ function renderRun(run) {
   sentMessagesDate.textContent = Number.isNaN(startedAt.getTime())
     ? ''
     : `· ${startedAt.toLocaleString('zh-CN', { hour12: false })}`;
-  renderSentMessages(run.sentMessages);
+  renderSentMessages(run.sentMessages, Boolean(run.config?.aiMatchEnabled));
   sentMessagesPanel.hidden = false;
   const percentage = Math.min(100, Math.round(succeeded / target * 100));
   progressBar.style.width = `${percentage}%`;
@@ -890,11 +1024,12 @@ async function refreshRunView() {
 async function initialize() {
   try {
     panelModeButton.textContent = FLOATING_MODE ? '停靠' : '浮动';
-    const store = await chrome.storage.local.get([CONFIG_STORAGE_KEY, RUN_STORAGE_KEY]);
+    const store = await chrome.storage.local.get([CONFIG_STORAGE_KEY, RUN_STORAGE_KEY, DEEPSEEK_API_KEY_STORAGE_KEY]);
     const storedConfig = store[CONFIG_STORAGE_KEY];
     const hasStoredConfig = Boolean(storedConfig && typeof storedConfig === 'object' && !Array.isArray(storedConfig));
     const normalizedStoredConfig = normalizeConfig(hasStoredConfig ? storedConfig : {});
     savedConfig = normalizedStoredConfig;
+    deepSeekApiKey = String(store[DEEPSEEK_API_KEY_STORAGE_KEY] || '');
     await refreshOnlineOnly();
     // activeTab is assigned by refreshOnlineOnly. Enable logging after that,
     // but before requesting expectations, so the first request is captured.
@@ -1026,6 +1161,58 @@ document.addEventListener('pointerdown', (event) => {
   });
 });
 
+aiMatchToggleButton.addEventListener('click', () => {
+  const expanded = aiMatchToggleButton.getAttribute('aria-expanded') !== 'true';
+  aiMatchToggleButton.setAttribute('aria-expanded', String(expanded));
+  aiMatchToggleButton.setAttribute('aria-label', expanded ? '收起 AI匹配配置' : '展开 AI匹配配置');
+  aiMatchPanel.hidden = !expanded;
+});
+
+function handleAiConfigInput(event) {
+  if (isConfigEditingLocked()) {
+    renderAiConfig(savedConfig);
+    showEditLockedNotice();
+    return;
+  }
+  savedConfig = aiConfigFromInputs();
+  renderAiDependentState(savedConfig);
+  clearTimeout(aiConfigSaveTimer);
+  aiConfigSaveTimer = setTimeout(() => persistAiConfig().catch((error) => {
+    showStatus(error?.message || String(error), true);
+  }), event.type === 'change' ? 0 : 300);
+}
+
+[
+  aiMatchEnabledInput,
+  aiResumeEnabledInput,
+  aiResumeInput,
+  aiResumePromptInput,
+  aiExpectedJobEnabledInput,
+  aiExpectedJobInput,
+  aiExpectedJobPromptInput,
+  aiOtherPromptInput
+].forEach((input) => {
+  input.addEventListener('input', handleAiConfigInput);
+  input.addEventListener('change', handleAiConfigInput);
+});
+
+deepSeekApiKeyInput.addEventListener('input', () => {
+  if (isConfigEditingLocked()) {
+    deepSeekApiKeyInput.value = deepSeekApiKey;
+    showEditLockedNotice();
+    return;
+  }
+  deepSeekApiKey = deepSeekApiKeyInput.value;
+  clearTimeout(apiKeySaveTimer);
+  apiKeySaveTimer = setTimeout(() => persistDeepSeekApiKey().catch((error) => {
+    showStatus(error?.message || String(error), true);
+  }), 300);
+});
+
+deepSeekApiKeyInput.addEventListener('change', () => {
+  persistDeepSeekApiKey().catch((error) => showStatus(error?.message || String(error), true));
+});
+
 configView.addEventListener('dblclick', (event) => {
   const target = event.target.closest('[data-edit-key]');
   if (!target || !configView.contains(target)) return;
@@ -1058,6 +1245,8 @@ greetButton.addEventListener('click', async () => {
   greetButton.disabled = true;
   showStatus('正在启动…');
   try {
+    savedConfig = aiConfigFromInputs();
+    await Promise.all([persistAiConfig(), persistDeepSeekApiKey()]);
     const siteTarget = savedConfig?.targetExpectBySite?.[currentSiteKey()];
     const runConfig = {
       ...savedConfig,
@@ -1152,6 +1341,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (areaName === 'local' && changes[RUN_STORAGE_KEY]) {
     renderRun(changes[RUN_STORAGE_KEY].newValue);
+  }
+  if (areaName === 'local' && changes[DEEPSEEK_API_KEY_STORAGE_KEY]) {
+    deepSeekApiKey = String(changes[DEEPSEEK_API_KEY_STORAGE_KEY].newValue || '');
+    if (document.activeElement !== deepSeekApiKeyInput) deepSeekApiKeyInput.value = deepSeekApiKey;
   }
   if (areaName === 'session' && changes[DEBUG_LOG_STORAGE_KEY]) {
     renderDebugLogs(changes[DEBUG_LOG_STORAGE_KEY].newValue);

@@ -313,6 +313,32 @@
     return '';
   }
 
+  async function aiMatchJob(run, job) {
+    if (!run.config.aiMatchEnabled) return { matched: true, reason: '' };
+    while (true) {
+      await waitWhilePaused(run);
+      await report(run, { statusText: '正在进行 AI匹配' });
+      const response = await chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_AUTO_GREETING_AI_MATCH',
+        runId: run.runId,
+        siteKey: 'liepin',
+        job
+      });
+      if (response?.ok) return { matched: Boolean(response.matched), reason: text(response.reason) };
+      if (response?.fatal) {
+        const error = new Error(response.error || 'AI匹配失败。');
+        error.name = 'AutoGreetingFatalError';
+        throw error;
+      }
+      run.paused = true;
+      await report(run, {
+        status: 'paused',
+        statusText: `${response?.error || 'AI匹配暂时不可用。'} 任务已暂停，请稍后继续`
+      });
+      await waitWhilePaused(run);
+    }
+  }
+
   function headIdFromJob(job) {
     return text(new URLSearchParams(text(job?.dataPromId)).get('head_id'));
   }
@@ -587,6 +613,25 @@
       return;
     }
 
+    const aiResult = await aiMatchJob(run, {
+      title: text(normalized?.jobName || job.title),
+      description: text(normalized?.jobInfo?.description),
+      skills: Array.isArray(normalized?.jobInfo?.skills) ? normalized.jobInfo.skills : [],
+      salary: text(normalized?.jobInfo?.salary || job.salary),
+      experience: text(normalized?.jobInfo?.experience || job.requireWorkYears),
+      education: text(normalized?.jobInfo?.education || job.requireEduLevel),
+      location: text(normalized?.jobInfo?.location || job.dq || job.dqCityName),
+      companyName: text(normalized?.companyName || company.fullCompanyName || company.compName),
+      companyIndustry: text(normalized?.companyProfile?.industry || company.compIndustry),
+      companyScale: text(normalized?.companyProfile?.employeeScale || company.compScale)
+    });
+    if (!aiResult.matched) {
+      run.progress.skipped += 1;
+      await report(run, { statusText: `已跳过：AI匹配未通过${aiResult.reason ? `（${aiResult.reason}）` : ''}` });
+      return;
+    }
+    await report(run, { statusText: `AI匹配通过${aiResult.reason ? `：${aiResult.reason}` : ''}` });
+
     const reservation = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_AUTO_GREETING_RESERVE',
       runId: run.runId,
@@ -656,7 +701,8 @@
         jobSkills: Array.isArray(record.jobInfo?.skills) ? record.jobInfo.skills : [],
         jobAddress: record.jobInfo?.address || '',
         message: record.lastMessage,
-        sentAt: record.updatedAt
+        sentAt: record.updatedAt,
+        aiMatchResult: run.config.aiMatchEnabled ? (aiResult.reason || '匹配通过') : ''
       }
     });
     if (!saved?.ok) throw new Error(saved?.error || '打招呼成功，但同步记录保存失败。');
@@ -719,6 +765,7 @@
             catch (error) {
               if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) throw error;
               if (error?.name === 'AutoGreetingPausedError' || run.paused) throw error;
+              if (error?.name === 'AutoGreetingFatalError') throw error;
               run.progress.failed += 1;
               await report(run, { statusText: error?.message || String(error) });
             }

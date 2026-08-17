@@ -55,7 +55,7 @@ if (globalThis.JobChatRuntimeConfig?.enableDebugLog) {
     // 本地 GA4 配置为可选文件，不存在时保持统计关闭。
   }
 }
-importScripts('analytics.js', 'shared-utils.js', 'shared-records.js', 'background-database.js');
+importScripts('analytics.js', 'shared-utils.js', 'shared-records.js', 'background-database.js', 'deepseek-job-matcher.js');
 
 const CONTENT_SCRIPT_FILES = [
   'src/shared-utils.js',
@@ -87,10 +87,105 @@ const AUTO_GREETING_RUN_STORAGE_KEY = 'jobChatAutoGreetingRun';
 const AUTO_GREETING_HISTORY_STORAGE_KEY = 'jobChatAutoGreetingHistory';
 const AUTO_GREETING_LOG_TABS_STORAGE_KEY = 'jobChatAutoGreetingLogTabs';
 const AUTO_GREETING_LOGS_STORAGE_KEY = 'jobChatAutoGreetingLogsByTab';
+const DEEPSEEK_API_KEY_STORAGE_KEY = 'jobChatDeepSeekApiKey';
 let autoGreetingSaveQueue = Promise.resolve();
 let autoGreetingLogQueue = Promise.resolve();
 let autoGreetingRiskQueue = Promise.resolve();
 const AUTO_GREETING_BACKGROUND_SESSION_ID = crypto.randomUUID();
+const autoGreetingAiControllers = new Map();
+
+function autoGreetingContentConfig(config = {}) {
+  const contentConfig = { ...config };
+  [
+    'aiResumeEnabled',
+    'aiResume',
+    'aiResumePromptTemplate',
+    'aiExpectedJobEnabled',
+    'aiExpectedJob',
+    'aiExpectedJobPromptTemplate',
+    'aiOtherPrompt'
+  ].forEach((key) => delete contentConfig[key]);
+  return contentConfig;
+}
+
+function abortAutoGreetingAiMatch(runId) {
+  const controller = autoGreetingAiControllers.get(String(runId || ''));
+  if (!controller) return;
+  controller.abort();
+  autoGreetingAiControllers.delete(String(runId || ''));
+}
+
+async function validateAutoGreetingAiConfig(config = {}) {
+  if (!config.aiMatchEnabled) return;
+  const store = await chrome.storage.local.get([DEEPSEEK_API_KEY_STORAGE_KEY]);
+  if (!String(store[DEEPSEEK_API_KEY_STORAGE_KEY] || '').trim()) {
+    throw new Error('启用 AI匹配前，请填写 DeepSeek API Key。');
+  }
+  if (!globalThis.JobChatDeepSeekMatcher.composeCriteria(config).trim()) {
+    throw new Error('请至少配置简历、期待岗位或其他匹配要求。');
+  }
+  if (config.aiResumeEnabled) {
+    if (!String(config.aiResume || '').trim()) throw new Error('已启用“我的简历”，请填写简历内容。');
+    if (!String(config.aiResumePromptTemplate || '').includes('${resume}')) throw new Error('简历匹配提示词必须包含 ${resume}。');
+  }
+  if (config.aiExpectedJobEnabled) {
+    if (!String(config.aiExpectedJob || '').trim()) throw new Error('已启用“期待岗位”，请填写期待岗位。');
+    if (!String(config.aiExpectedJobPromptTemplate || '').includes('${expectedJob}')) throw new Error('期待岗位提示词必须包含 ${expectedJob}。');
+  }
+}
+
+async function matchAutoGreetingJob(message, sender) {
+  const runId = String(message.runId || '');
+  const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY, DEEPSEEK_API_KEY_STORAGE_KEY]);
+  const run = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if (!run || run.runId !== runId) return { ok: false, code: 'RUN_EXPIRED', fatal: true, error: '自动消息任务已失效。' };
+  if (Number(sender.tab?.id || 0) !== Number(run.tabId)) return { ok: false, code: 'TAB_MISMATCH', fatal: true, error: '任务标签页不匹配。' };
+  if (String(message.siteKey || '') !== String(run.siteKey || '')) return { ok: false, code: 'SITE_MISMATCH', fatal: true, error: '任务站点不匹配。' };
+  if (!run.config?.aiMatchEnabled) return { ok: true, matched: true, reason: 'AI匹配未启用' };
+  if (!['running', 'paused'].includes(run.status)) return { ok: false, code: 'RUN_INACTIVE', fatal: true, error: '自动消息任务当前不可执行 AI匹配。' };
+  abortAutoGreetingAiMatch(runId);
+  const controller = new AbortController();
+  autoGreetingAiControllers.set(runId, controller);
+  const logAiRequest = async (event) => {
+    if (event.phase === 'request') {
+      await appendAutoGreetingLog(run.tabId, [
+        `请求 ${event.method} ${event.url}`,
+        'Headers: {"Content-Type":"application/json","Authorization":"Bearer [已隐藏]"}',
+        `Body: ${JSON.stringify(event.body, null, 2)}`
+      ].join('\n'), { raw: true });
+      return;
+    }
+    if (event.phase === 'response') {
+      await appendAutoGreetingLog(run.tabId, [
+        `响应 ${event.method} ${event.url}`,
+        `HTTP ${event.status || 0}${event.statusText ? ` ${event.statusText}` : ''}`,
+        `Body: ${String(event.body || '')}`
+      ].join('\n'), { raw: true });
+      return;
+    }
+    await appendAutoGreetingLog(run.tabId, `DeepSeek 请求异常 ${event.method} ${event.url}\n${event.error || '未知错误'}`, { raw: true });
+  };
+  try {
+    const result = await globalThis.JobChatDeepSeekMatcher.matchJob({
+      apiKey: store[DEEPSEEK_API_KEY_STORAGE_KEY],
+      config: run.config,
+      job: message.job,
+      signal: controller.signal,
+      onLog: logAiRequest
+    });
+    return { ok: true, matched: result.matched, reason: result.reason };
+  } catch (error) {
+    return {
+      ok: false,
+      code: String(error?.code || 'DEEPSEEK_ERROR'),
+      fatal: Boolean(error?.fatal),
+      retryable: Boolean(error?.retryable),
+      error: error?.message || String(error)
+    };
+  } finally {
+    if (autoGreetingAiControllers.get(runId) === controller) autoGreetingAiControllers.delete(runId);
+  }
+}
 
 function autoGreetingPanelPath(debug = false, floatingTabId = 0) {
   const params = new URLSearchParams();
@@ -256,6 +351,7 @@ async function startAutoGreeting(message) {
   if (!site) {
     throw new Error('请在已登录的 BOSS直聘或猎聘页面启动自动打招呼。');
   }
+  await validateAutoGreetingAiConfig(message.config || {});
   const contentStatus = await ensureAutoGreetingContent(tabId);
   const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
   let current = store[AUTO_GREETING_RUN_STORAGE_KEY];
@@ -294,7 +390,7 @@ async function startAutoGreeting(message) {
   await chrome.storage.local.set({ [AUTO_GREETING_RUN_STORAGE_KEY]: run });
   await appendAutoGreetingLog(tabId, `启动任务：目标 ${Number(run.config.greetingCount || 0)} 条，请求速率 ${Number(run.config.requestRatePerMinute || 25)} 次/分钟，并发 1`);
   const response = await sendMessageToTab(tabId, {
-    type: 'JOB_CHAT_AUTO_GREETING_START', runId, config: run.config,
+    type: 'JOB_CHAT_AUTO_GREETING_START', runId, config: autoGreetingContentConfig(run.config),
     deadlineAt: run.deadlineAt,
     onlineOnly: await onlineOnlyState(tabId)
   });
@@ -313,6 +409,7 @@ async function controlAutoGreeting(message, action) {
   const requestedTabId = Number(message.tabId || 0);
   const store = await chrome.storage.local.get([AUTO_GREETING_RUN_STORAGE_KEY]);
   const storedRun = store[AUTO_GREETING_RUN_STORAGE_KEY];
+  if ((action === 'pause' || action === 'cancel') && storedRun?.runId) abortAutoGreetingAiMatch(storedRun.runId);
   // A code=37 retry is managed by the background worker while the page is
   // waiting to reload.  Do not require the panel's current tab lookup here:
   // the panel can be floating or its active-tab query can temporarily be empty.
@@ -346,7 +443,7 @@ async function controlAutoGreeting(message, action) {
     const response = await sendMessageToTab(run.tabId, {
       type: 'JOB_CHAT_AUTO_GREETING_START',
       runId: run.runId,
-      config: run.config || {},
+      config: autoGreetingContentConfig(run.config || {}),
       recommendedListUrl: run.recommendedListUrl,
       deadlineAt: run.deadlineAt,
       onlineOnly: await onlineOnlyState(run.tabId),
@@ -444,7 +541,7 @@ async function handleAutoGreetingRiskControl(message, sender) {
     const response = await sendMessageToTab(run.tabId, {
       type: 'JOB_CHAT_AUTO_GREETING_START',
       runId: run.runId,
-      config: run.config || {},
+      config: autoGreetingContentConfig(run.config || {}),
       recommendedListUrl: resumed.recommendedListUrl,
       deadlineAt: resumed.deadlineAt,
       onlineOnly: await onlineOnlyState(run.tabId),
@@ -569,7 +666,8 @@ async function saveAutoGreetingSuccess(message) {
       jobSkills: Array.isArray(sentItem.jobSkills) ? sentItem.jobSkills : (Array.isArray(normalized.jobInfo?.skills) ? normalized.jobInfo.skills : []),
       jobAddress: String(sentItem.jobAddress || normalized.jobInfo?.address || ''),
       message: String(sentItem.message || normalized.lastMessage || ''),
-      sentAt: String(sentItem.sentAt || normalized.updatedAt || new Date().toISOString())
+      sentAt: String(sentItem.sentAt || normalized.updatedAt || new Date().toISOString()),
+      aiMatchResult: String(sentItem.aiMatchResult || '')
     };
     next[AUTO_GREETING_RUN_STORAGE_KEY] = {
       ...run,
@@ -1990,6 +2088,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'JOB_CHAT_AUTO_GREETING_START') {
     startAutoGreeting(message).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_AUTO_GREETING_AI_MATCH') {
+    matchAutoGreetingJob(message, sender)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, fatal: true, error: error?.message || String(error) }));
     return true;
   }
 

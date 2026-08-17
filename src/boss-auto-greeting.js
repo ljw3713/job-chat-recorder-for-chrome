@@ -69,6 +69,32 @@
     return '';
   }
 
+  async function aiMatchJob(run, job) {
+    if (!run.config.aiMatchEnabled) return { matched: true, reason: '' };
+    while (true) {
+      await waitWhilePaused(run);
+      await report(run, { statusText: '正在进行 AI匹配' });
+      const response = await chrome.runtime.sendMessage({
+        type: 'JOB_CHAT_AUTO_GREETING_AI_MATCH',
+        runId: run.runId,
+        siteKey: 'boss',
+        job
+      });
+      if (response?.ok) return { matched: Boolean(response.matched), reason: text(response.reason) };
+      if (response?.fatal) {
+        const error = new Error(response.error || 'AI匹配失败。');
+        error.name = 'AutoGreetingFatalError';
+        throw error;
+      }
+      run.paused = true;
+      await report(run, {
+        status: 'paused',
+        statusText: `${response?.error || 'AI匹配暂时不可用。'} 任务已暂停，请稍后继续`
+      });
+      await waitWhilePaused(run);
+    }
+  }
+
   function parseResponse(result, label) {
     let payload;
     try { payload = result?.responseText ? JSON.parse(result.responseText) : {}; } catch (_) {
@@ -503,6 +529,36 @@
       return;
     }
 
+    const duplicateCheck = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_AUTO_GREETING_RESERVE', runId: run.runId, jobId, checkOnly: true
+    });
+    if (!duplicateCheck?.ok) throw new Error(duplicateCheck?.error || '无法检查重复打招呼记录。');
+    if (!duplicateCheck.reserved) {
+      run.progress.skipped += 1;
+      await report(run, { statusText: '已跳过：该岗位已有沟通或发送记录' });
+      return;
+    }
+
+    const normalized = globalThis.JobChatBossExtractor.normalizeJobResponse(payload, { externalId: jobId, detailAccessToken: '' });
+    const aiResult = await aiMatchJob(run, {
+      title: normalized.jobName || candidate.jobName,
+      description: normalized.jobInfo?.description || text(detail.jobInfo?.postDescription),
+      skills: Array.isArray(normalized.jobInfo?.skills) ? normalized.jobInfo.skills : [],
+      salary: normalized.jobInfo?.salary || candidate.salaryDesc,
+      experience: normalized.jobInfo?.experience || candidate.jobExperience,
+      education: normalized.jobInfo?.education || text(detail.jobInfo?.degreeName),
+      location: normalized.jobInfo?.location || text(detail.jobInfo?.locationName),
+      companyName: normalized.companyName || candidate.brandName,
+      companyIndustry: normalized.companyProfile?.industry || '',
+      companyScale: normalized.companyProfile?.employeeScale || ''
+    });
+    if (!aiResult.matched) {
+      run.progress.skipped += 1;
+      await report(run, { statusText: `已跳过：AI匹配未通过${aiResult.reason ? `（${aiResult.reason}）` : ''}` });
+      return;
+    }
+    await report(run, { statusText: `AI匹配通过${aiResult.reason ? `：${aiResult.reason}` : ''}` });
+
     const reservation = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_AUTO_GREETING_RESERVE', runId: run.runId, jobId
     });
@@ -566,7 +622,6 @@
       return;
     }
 
-    const normalized = globalThis.JobChatBossExtractor.normalizeJobResponse(payload, { externalId: jobId, detailAccessToken: '' });
     const sentMessage = greetingTextFromResponse(addPayload);
     const record = makeRecord(candidate, payload, normalized, sentMessage);
     const saved = await chrome.runtime.sendMessage({
@@ -587,7 +642,8 @@
         jobSkills: Array.isArray(record.jobInfo?.skills) ? record.jobInfo.skills : [],
         jobAddress: record.jobInfo?.address || '',
         message: record.lastMessage,
-        sentAt: record.updatedAt
+        sentAt: record.updatedAt,
+        aiMatchResult: run.config.aiMatchEnabled ? (aiResult.reason || '匹配通过') : ''
       }
     });
     if (!saved?.ok) throw new Error(saved?.error || '打招呼成功，但同步记录保存失败。');
@@ -649,6 +705,7 @@
         try { await processCandidate(run, candidate); }
         catch (error) {
           if (error?.name === 'AutoGreetingRiskControlError') throw error;
+          if (error?.name === 'AutoGreetingFatalError') throw error;
           if (error?.name === 'AutoGreetingCancelledError' || run.cancelled) {
             if (run.reservedJobId && !run.postStartedJobId) {
               await chrome.runtime.sendMessage({

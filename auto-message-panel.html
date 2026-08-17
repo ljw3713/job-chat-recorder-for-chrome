@@ -66,7 +66,7 @@
         margin: 0;
         border: 1px solid #e5e7eb;
         border-radius: 8px;
-        overflow: hidden;
+        overflow: visible;
       }
       .config-row {
         display: grid;
@@ -233,15 +233,24 @@
       .recommend-filter-section > summary::-webkit-details-marker {
         display: none;
       }
-      .recommend-filter-section > summary::after {
-        content: '⌄';
+      .recommend-filter-toggle-icon,
+      .ai-match-toggle-icon {
+        display: block;
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
         color: #6b7280;
-        font-size: 16px;
-        line-height: 1;
+        transition: transform .15s ease;
       }
-      .recommend-filter-section[open] > summary::after {
-        transform: rotate(180deg);
+      .recommend-filter-toggle-icon path,
+      .ai-match-toggle-icon path {
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.8;
       }
+      .recommend-filter-section[open] .recommend-filter-toggle-icon { transform: rotate(180deg); }
       .recommend-filter-section.is-disabled .recommend-filter-option,
       .recommend-filter-section.is-disabled .recommend-filter-search {
         opacity: 0.55;
@@ -369,6 +378,114 @@
       .condition-option input:disabled + span {
         color: #9ca3af;
       }
+      .ai-match-section {
+        border-bottom: 1px solid #e5e7eb;
+        background: #fff;
+      }
+      .ai-match-header {
+        display: flex;
+        min-height: 42px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+      }
+      .ai-match-toggle {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: #6b7280;
+        cursor: pointer;
+        font-size: 18px;
+        line-height: 1;
+      }
+      .ai-match-toggle-icon {
+        line-height: 1;
+      }
+      .ai-match-toggle[aria-expanded="true"] .ai-match-toggle-icon { transform: rotate(180deg); }
+      .ai-match-toggle:hover { background: #f3f4f6; }
+      .ai-match-panel {
+        display: grid;
+        gap: 10px;
+        padding: 0 12px 12px;
+        border-top: 1px solid #f3f4f6;
+        background: #fafafa;
+      }
+      .ai-match-panel[hidden] { display: none; }
+      .ai-field {
+        display: grid;
+        gap: 5px;
+        padding-top: 10px;
+      }
+      .ai-field-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #4b5563;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .ai-field-label a {
+        color: #6d28d9;
+        text-decoration: none;
+      }
+      .ai-field-label a:hover,
+      .ai-field-label a:focus-visible {
+        text-decoration: underline;
+      }
+      .ai-field input[type="password"],
+      .ai-field textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #fff;
+        color: #1f2937;
+        font: inherit;
+        font-size: 12px;
+        line-height: 18px;
+        outline: none;
+        padding: 7px 8px;
+        resize: vertical;
+      }
+      .ai-field input:focus,
+      .ai-field textarea:focus { border-color: #8b5cf6; box-shadow: 0 0 0 2px #ede9fe; }
+      .ai-field textarea:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+      .ai-field textarea[readonly] { background: #f9fafb; color: #4b5563; }
+      .ai-field-hint { margin: 0; color: #6b7280; font-size: 11px; line-height: 16px; }
+      [data-tooltip] { position: relative; }
+      [data-tooltip]::after {
+        position: absolute;
+        z-index: 30;
+        left: 0;
+        bottom: calc(100% + 7px);
+        width: max-content;
+        max-width: 260px;
+        padding: 6px 8px;
+        border-radius: 5px;
+        background: #111827;
+        color: #fff;
+        content: attr(data-tooltip);
+        font-size: 11px;
+        font-weight: 400;
+        line-height: 16px;
+        opacity: 0;
+        pointer-events: none;
+        text-align: left;
+        transform: translateY(3px);
+        transition: opacity .12s ease, transform .12s ease;
+        white-space: normal;
+      }
+      .ai-match-toggle[data-tooltip]::after {
+        right: 0;
+        left: auto;
+      }
+      [data-tooltip]:hover::after,
+      [data-tooltip]:focus-visible::after { opacity: 1; transform: translateY(0); }
       .quick-range {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -553,9 +670,12 @@
       }
       .sent-message-main {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr) minmax(86px, .45fr);
         align-items: center;
         gap: 10px;
+      }
+      .sent-message-main.ai-match-enabled {
+        grid-template-columns: minmax(0, .8fr) minmax(0, 1.05fr) minmax(86px, .42fr) minmax(0, 1.35fr);
       }
       .sent-message-company,
       .sent-message-job {
@@ -577,6 +697,16 @@
         color: #6b7280;
         font-size: 12px;
         line-height: 20px;
+        white-space: nowrap;
+      }
+      .sent-message-ai-result {
+        min-width: 0;
+        overflow: hidden;
+        color: #6d28d9;
+        font-size: 12px;
+        line-height: 20px;
+        text-align: right;
+        text-overflow: ellipsis;
         white-space: nowrap;
       }
       .sent-message-empty {
@@ -742,6 +872,9 @@
           >
             <summary>
               <span class="recommend-filter-title">推荐岗位筛选条件</span>
+              <svg class="recommend-filter-toggle-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m3.5 6 4.5 4 4.5-4"></path>
+              </svg>
             </summary>
             <div class="recommend-filter-content">
               <div
@@ -763,6 +896,59 @@
             >
               未设置
             </dd>
+          </div>
+          <div id="aiMatchSection" class="ai-match-section">
+            <div class="ai-match-header">
+              <label
+                class="condition-option"
+                data-tooltip="启用后，岗位通过全部普通条件和重复检查后，还需要通过 DeepSeek 匹配。"
+              >
+                <input id="aiMatchEnabled" type="checkbox" />
+                <span>AI匹配</span>
+              </label>
+              <button
+                id="aiMatchToggle"
+                class="ai-match-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="aiMatchPanel"
+                aria-label="展开 AI匹配配置"
+                data-tooltip="展开或收起 AI匹配配置"
+              ><svg class="ai-match-toggle-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m3.5 6 4.5 4 4.5-4"></path>
+              </svg></button>
+            </div>
+            <div id="aiMatchPanel" class="ai-match-panel" hidden>
+              <label class="ai-field" data-tooltip="由扩展直接访问 DeepSeek。Key 仅保存在当前浏览器，不会发送到项目服务器。">
+                <span class="ai-field-label"><a href="https://platform.deepseek.com/" target="_blank" rel="noreferrer">DeepSeek API Key</a></span>
+                <input id="deepSeekApiKey" type="password" autocomplete="off" spellcheck="false" maxlength="256" placeholder="sk-..." />
+              </label>
+              <div class="ai-field" data-tooltip="勾选后，简历内容会发送给 DeepSeek 并参与岗位匹配。">
+                <label class="ai-field-label"><input id="aiResumeEnabled" type="checkbox" />我的简历</label>
+                <textarea id="aiResume" rows="6" maxlength="20000" placeholder="粘贴简历或填写主要工作经历"></textarea>
+              </div>
+              <label class="ai-field" data-tooltip="使用 ${resume} 表示上方填写的简历内容。">
+                <span class="ai-field-label">简历匹配提示词</span>
+                <textarea id="aiResumePromptTemplate" rows="5" maxlength="4000"></textarea>
+              </label>
+              <div class="ai-field" data-tooltip="勾选后，期待的职位方向会参与岗位匹配。">
+                <label class="ai-field-label"><input id="aiExpectedJobEnabled" type="checkbox" />期待岗位</label>
+                <textarea id="aiExpectedJob" rows="3" maxlength="4000" placeholder="例如：上海 Java 后端开发，不接受外包"></textarea>
+              </div>
+              <label class="ai-field" data-tooltip="使用 ${expectedJob} 表示上方填写的期待岗位内容。">
+                <span class="ai-field-label">期待岗位提示词</span>
+                <textarea id="aiExpectedJobPromptTemplate" rows="5" maxlength="4000"></textarea>
+              </label>
+              <label class="ai-field" data-tooltip="用于补充地点、行业、公司规模、排除条件等要求，非空时自动参与匹配。">
+                <span class="ai-field-label">其他</span>
+                <textarea id="aiOtherPrompt" rows="4" maxlength="4000" placeholder="填写其他匹配或排除要求"></textarea>
+              </label>
+              <label class="ai-field" data-tooltip="实时展示已启用条件拼装后的总提示词；岗位信息会在运行时加入。">
+                <span class="ai-field-label">预览</span>
+                <textarea id="aiPromptPreview" rows="9" readonly></textarea>
+              </label>
+              <p class="ai-field-hint">简历和岗位信息会直接发送给 DeepSeek。浏览器本地存储并非加密保险箱，请妥善保管 API Key。</p>
+            </div>
           </div>
           <div class="config-row compact-row keyword-row">
             <dt>技术关键字</dt>

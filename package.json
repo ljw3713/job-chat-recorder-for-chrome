@@ -1,5 +1,6 @@
 {
   "scripts": {
+    "test": "node --test test/*.test.js",
     "check": "node scripts/check-extension.js",
     "build": "node scripts/package-extension.js --browser=chrome --skip-ga4",
     "build:edge": "node scripts/package-extension.js --browser=edge --skip-ga4",
