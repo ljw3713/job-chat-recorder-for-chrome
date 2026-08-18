@@ -104,6 +104,7 @@ let deepSeekApiKey = '';
 let aiConfigSaveTimer = null;
 let apiKeySaveTimer = null;
 let renderedRunStatus = '';
+let renderedRunTabId = 0;
 
 function isConfigEditingLocked() {
   return ['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus);
@@ -929,7 +930,8 @@ function renderSentMessages(messages, aiMatchEnabled = false) {
 }
 
 function renderRun(run) {
-  if (!run || Number(run.tabId) !== Number(activeTab?.id)) return false;
+  if (!run) return false;
+  renderedRunTabId = Number(run.tabId || 0);
   const target = Math.max(1, Number(run.config?.greetingCount || 1));
   const succeeded = Number(run.succeeded || 0);
   const statusLabels = { running: '正在运行', paused: '已暂停', refreshing: '正在刷新重试', cancelling: '正在取消', cancelled: '已取消', completed: '已完成', failed: '运行失败' };
@@ -1270,7 +1272,7 @@ runControlButton.addEventListener('click', async () => {
   const action = runControlButton.textContent === '继续' ? 'RESUME' : 'PAUSE';
   runControlButton.disabled = true;
   try {
-    const response = await chrome.runtime.sendMessage({ type: `JOB_CHAT_AUTO_GREETING_${action}`, tabId: activeTab?.id });
+    const response = await chrome.runtime.sendMessage({ type: `JOB_CHAT_AUTO_GREETING_${action}`, tabId: renderedRunTabId || activeTab?.id });
     if (!response?.ok) throw new Error(response?.error || '无法控制任务。');
   } catch (error) {
     showStatus(error?.message || String(error), true);
@@ -1285,7 +1287,7 @@ cancelRunButton.addEventListener('click', async () => {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_AUTO_GREETING_CANCEL',
-      tabId: activeTab?.id
+      tabId: renderedRunTabId || activeTab?.id
     });
     if (!response?.ok) throw new Error(response?.error || '无法取消任务。');
   } catch (error) {

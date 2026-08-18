@@ -25,3 +25,13 @@ test('page hooks identify hunters from each site response contract', () => {
   assert.match(pageFilter, /hunterEncryptJobIds/);
   assert.match(pageFilter, /hunterIdentifiers/);
 });
+
+test('auto-message panel keeps the unique task visible across tab switches', () => {
+  const panel = read('src/auto-message-panel.js');
+  const renderRun = panel.match(/function renderRun\(run\) \{[\s\S]*?\n\}/);
+  assert.ok(renderRun, 'renderRun should exist');
+  assert.match(renderRun[0], /if \(!run\) return false;/);
+  assert.doesNotMatch(renderRun[0], /run\.tabId\) !== Number\(activeTab\?\.id\)/);
+  assert.match(panel, /let renderedRunTabId = 0;/);
+  assert.match(panel, /tabId: renderedRunTabId \|\| activeTab\?\.id/);
+});
