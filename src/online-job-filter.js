@@ -3,8 +3,10 @@
 
   const adapters = new Map();
   const offlineIdentifiers = new Set();
+  const hunterIdentifiers = new Set();
   let activeAdapter = null;
   let enabled = false;
+  let nonHunterEnabled = false;
   let companyFilterEnabled = false;
   let companyKeywords = [];
   let settingsKnown = false;
@@ -46,8 +48,9 @@
   function filterCurrentCards() {
     renderQueued = false;
     if (!hasActiveFilter()) return;
-    activeAdapter.filterCards(document, offlineIdentifiers, {
+    activeAdapter.filterCards(document, { offlineIdentifiers, hunterIdentifiers }, {
       onlineOnlyEnabled: enabled,
+      nonHunterEnabled,
       companyFilterEnabled,
       companyKeywords
     });
@@ -62,7 +65,7 @@
   }
 
   function hasActiveFilter() {
-    return Boolean(activeAdapter && (enabled || (companyFilterEnabled && companyKeywords.length)));
+    return Boolean(activeAdapter && (enabled || nonHunterEnabled || (companyFilterEnabled && companyKeywords.length)));
   }
 
   function textIncludesKeyword(card, selector, keywords) {
@@ -168,15 +171,26 @@
     clearTimer('fallback');
     hasMore = payload.hasMore === true;
     if (!hasMore) autoLoadAttempts = 0;
-    const identifiers = typeof activeAdapter?.identifiersFromPayload === 'function'
-      ? activeAdapter.identifiersFromPayload(payload)
+    const offline = typeof activeAdapter?.offlineIdentifiersFromPayload === 'function'
+      ? activeAdapter.offlineIdentifiersFromPayload(payload)
       : [];
-    if (enabled && Array.isArray(identifiers)) {
-      identifiers.forEach((identifier) => {
+    const hunters = typeof activeAdapter?.hunterIdentifiersFromPayload === 'function'
+      ? activeAdapter.hunterIdentifiersFromPayload(payload)
+      : [];
+    if (enabled && Array.isArray(offline)) {
+      offline.forEach((identifier) => {
         const normalized = typeof activeAdapter?.normalizeIdentifier === 'function'
           ? activeAdapter.normalizeIdentifier(identifier)
           : String(identifier || '').trim();
         if (normalized) offlineIdentifiers.add(normalized);
+      });
+    }
+    if (nonHunterEnabled && Array.isArray(hunters)) {
+      hunters.forEach((identifier) => {
+        const normalized = typeof activeAdapter?.normalizeIdentifier === 'function'
+          ? activeAdapter.normalizeIdentifier(identifier)
+          : String(identifier || '').trim();
+        if (normalized) hunterIdentifiers.add(normalized);
       });
     }
     queueFilter();
@@ -187,12 +201,17 @@
     if (!settingsKnown || !activeAdapter?.commandSource || !activeAdapter?.setCommandType) return;
     window.postMessage({
       source: activeAdapter.commandSource,
-      command: { type: activeAdapter.setCommandType, enabled: hasActiveFilter() }
+      command: {
+        type: activeAdapter.setCommandType,
+        onlineOnlyEnabled: enabled,
+        nonHunterEnabled
+      }
     }, '*');
   }
 
-  function applySettings(onlineOnly, companyFilter, keywords) {
+  function applySettings(onlineOnly, nonHunter, companyFilter, keywords) {
     enabled = Boolean(onlineOnly && activeAdapter);
+    nonHunterEnabled = Boolean(nonHunter && activeAdapter);
     companyFilterEnabled = Boolean(companyFilter && activeAdapter);
     companyKeywords = normalizeCompanyKeywords(keywords);
     settingsKnown = true;
@@ -205,6 +224,7 @@
       observer?.disconnect();
       activeAdapter?.clearFilter?.(document);
       offlineIdentifiers.clear();
+      hunterIdentifiers.clear();
       hasMore = false;
       requestInFlight = false;
       autoRequestPending = false;
@@ -227,8 +247,11 @@
     matchesLocation(currentLocation) {
       return /(^|\.)zhipin\.com$/i.test(currentLocation.hostname);
     },
-    identifiersFromPayload(payload) {
+    offlineIdentifiersFromPayload(payload) {
       return payload.encryptJobIds;
+    },
+    hunterIdentifiersFromPayload(payload) {
+      return payload.hunterEncryptJobIds;
     },
     needsMoreJobs(root, currentWindow, pageBottomDistance) {
       const list = root.querySelector('.job-list-container');
@@ -246,14 +269,23 @@
           const rawHref = element.getAttribute('href') || '';
           let href = rawHref;
           try { href = decodeURIComponent(rawHref); } catch (_) {}
-          for (const identifier of identifiers) {
+          for (const identifier of identifiers.offlineIdentifiers) {
+            if (rawHref.includes(identifier) || href.includes(identifier)) return true;
+          }
+          return false;
+        });
+        const hunterMatched = options.nonHunterEnabled && hrefElements.some((element) => {
+          const rawHref = element.getAttribute('href') || '';
+          let href = rawHref;
+          try { href = decodeURIComponent(rawHref); } catch (_) {}
+          for (const identifier of identifiers.hunterIdentifiers) {
             if (rawHref.includes(identifier) || href.includes(identifier)) return true;
           }
           return false;
         });
         const companyMatched = options.companyFilterEnabled
           && textIncludesKeyword(card, '.boss-name', options.companyKeywords);
-        if (offlineMatched || companyMatched) {
+        if (offlineMatched || hunterMatched || companyMatched) {
           card.remove();
           removed += 1;
         }
@@ -283,8 +315,11 @@
     matchesLocation(currentLocation) {
       return /(^|\.)liepin\.com$/i.test(currentLocation.hostname);
     },
-    identifiersFromPayload(payload) {
+    offlineIdentifiersFromPayload(payload) {
       return payload.identifiers;
+    },
+    hunterIdentifiersFromPayload(payload) {
+      return payload.hunterIdentifiers;
     },
     normalizeIdentifier(identifier) {
       return normalizeLiepinJobLink(identifier);
@@ -303,10 +338,11 @@
       cards.forEach((card) => {
         const jobLink = card.querySelector('a[data-nick="job-detail-job-info"][href]');
         const normalized = normalizeLiepinJobLink(jobLink?.getAttribute('href') || '');
-        const offlineMatched = options.onlineOnlyEnabled && Boolean(normalized && identifiers.has(normalized));
+        const offlineMatched = options.onlineOnlyEnabled && Boolean(normalized && identifiers.offlineIdentifiers.has(normalized));
+        const hunterMatched = options.nonHunterEnabled && Boolean(normalized && identifiers.hunterIdentifiers.has(normalized));
         const companyMatched = options.companyFilterEnabled
           && textIncludesKeyword(card, '[class*="company-name-"]', options.companyKeywords);
-        const matched = offlineMatched || companyMatched;
+        const matched = offlineMatched || hunterMatched || companyMatched;
         card.classList.toggle(LIEPIN_FILTERED_CARD_CLASS, matched);
         if (matched) hidden += 1;
       });
@@ -339,23 +375,26 @@
   async function initialize() {
     if (!activeAdapter) return;
     try {
-      const [onlineOnlyResponse, companyFilterResponse] = await Promise.all([
+      const [onlineOnlyResponse, nonHunterResponse, companyFilterResponse] = await Promise.all([
         chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET' }),
+        chrome.runtime.sendMessage({ type: 'JOB_CHAT_NON_HUNTER_GET' }),
         chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_FILTER_GET' })
       ]);
       applySettings(
         Boolean(onlineOnlyResponse?.ok && onlineOnlyResponse.enabled),
+        Boolean(nonHunterResponse?.ok && nonHunterResponse.enabled),
         Boolean(companyFilterResponse?.ok && companyFilterResponse.enabled),
         companyFilterResponse?.ok ? companyFilterResponse.keywords : ''
       );
     } catch (_) {
-      applySettings(false, false, '');
+      applySettings(false, false, false, '');
     }
   }
 
   globalThis.JobChatOnlineJobFilter = {
     registerAdapter,
     isEnabled: () => enabled,
+    isNonHunterEnabled: () => nonHunterEnabled,
     isCompanyFilterEnabled: () => companyFilterEnabled
   };
 

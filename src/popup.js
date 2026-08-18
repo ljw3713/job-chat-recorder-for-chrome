@@ -8,11 +8,11 @@ const onlineOnlyCheckbox = document.getElementById('onlineOnlyCheckbox');
 const onlineOnlyText = document.getElementById('onlineOnlyText');
 const nonHunterOption = document.getElementById('nonHunterOption');
 const nonHunterCheckbox = document.getElementById('nonHunterCheckbox');
+const nonHunterText = document.getElementById('nonHunterText');
 const companyFilterRow = document.getElementById('companyFilterRow');
 const companyFilterCheckbox = document.getElementById('companyFilterCheckbox');
 const companyFilterKeywordsInput = document.getElementById('companyFilterKeywords');
 const autoMessageBtn = document.getElementById('autoMessageBtn');
-const AUTO_MESSAGE_CONFIG_KEY = 'jobChatAutoMessageConfig';
 let activeTab = null;
 
 const SUPPORTED_SITES = [
@@ -59,6 +59,9 @@ function setNonHunterAvailability(site, enabled = false) {
   nonHunterCheckbox.disabled = !available;
   nonHunterCheckbox.checked = available && Boolean(enabled);
   nonHunterOption.classList.toggle('disabled', !available);
+  nonHunterText.dataset.tooltip = available
+    ? '修改后需要刷新当前招聘页面才能生效'
+    : '请先打开 BOSS直聘或猎聘页面';
 }
 
 function setCompanyFilterAvailability(site, enabled = false, keywords = '') {
@@ -86,13 +89,13 @@ async function refreshCurrentSiteHint() {
   if (site) {
     currentSiteBox.textContent = `当前网站：${site.source}，可以提取。`;
     currentSiteBox.className = 'site ok';
-    const [onlineOnlyResponse, companyFilterResponse, autoMessageStore] = await Promise.all([
+    const [onlineOnlyResponse, nonHunterResponse, companyFilterResponse] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET', tabId: tab.id }),
-      chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_FILTER_GET', tabId: tab.id }),
-      chrome.storage.local.get([AUTO_MESSAGE_CONFIG_KEY])
+      chrome.runtime.sendMessage({ type: 'JOB_CHAT_NON_HUNTER_GET', tabId: tab.id }),
+      chrome.runtime.sendMessage({ type: 'JOB_CHAT_COMPANY_FILTER_GET', tabId: tab.id })
     ]);
     setOnlineOnlyAvailability(site, onlineOnlyResponse?.ok && onlineOnlyResponse.enabled);
-    setNonHunterAvailability(site, Boolean(autoMessageStore[AUTO_MESSAGE_CONFIG_KEY]?.nonHunterOnly));
+    setNonHunterAvailability(site, nonHunterResponse?.ok && nonHunterResponse.enabled);
     setCompanyFilterAvailability(
       site,
       companyFilterResponse?.ok && companyFilterResponse.enabled,
@@ -142,10 +145,13 @@ nonHunterCheckbox.addEventListener('change', async () => {
     if (!tab?.id || !detectSupportedSite(tab.url || '')) {
       throw new Error('请先打开 BOSS直聘或猎聘页面。');
     }
-    const store = await chrome.storage.local.get([AUTO_MESSAGE_CONFIG_KEY]);
-    const previous = store[AUTO_MESSAGE_CONFIG_KEY];
-    const config = previous && typeof previous === 'object' && !Array.isArray(previous) ? previous : {};
-    await chrome.storage.local.set({ [AUTO_MESSAGE_CONFIG_KEY]: { ...config, nonHunterOnly: enabled } });
+    const response = await chrome.runtime.sendMessage({
+      type: 'JOB_CHAT_NON_HUNTER_SET',
+      tabId: tab.id,
+      enabled
+    });
+    if (!response?.ok) throw new Error(response?.error || '无法保存非猎头筛选设置。');
+    nonHunterCheckbox.checked = Boolean(response.enabled);
   } catch (error) {
     nonHunterCheckbox.checked = !enabled;
     errorBox.textContent = error?.message || String(error);

@@ -12,8 +12,10 @@
   window.__JOB_CHAT_LIEPIN_ONLINE_JOB_HOOK_VERSION__ = hookVersion;
 
   let stateKnown = false;
-  let enabled = false;
+  let onlineOnlyEnabled = false;
+  let nonHunterEnabled = false;
   const pendingOfflineLinks = new Set();
+  const pendingHunterLinks = new Set();
   let pendingBatch = null;
 
   function emit(payload) {
@@ -47,6 +49,10 @@
         .filter((item) => item?.recruiter?.imStatus === false)
         .map((item) => String(item?.job?.link || '').trim())
         .filter(Boolean),
+      hunterIdentifiers: records
+        .filter((item) => String(item?.job?.jobKind || '') === '1')
+        .map((item) => String(item?.job?.link || '').trim())
+        .filter(Boolean),
       hasMore: payload.data.hasNextPage === true,
       jobCount: records.length
     };
@@ -57,6 +63,7 @@
     emit({
       type: 'LIEPIN_ONLINE_ONLY_JOB_BATCH',
       identifiers: [...new Set(batch.identifiers || [])].slice(0, 2000),
+      hunterIdentifiers: [...new Set(batch.hunterIdentifiers || [])].slice(0, 2000),
       hasMore: batch.hasMore === true,
       jobCount: Math.max(0, Number(batch.jobCount || 0))
     });
@@ -67,26 +74,30 @@
     if (!batch) return;
     if (!stateKnown) {
       batch.identifiers.forEach((identifier) => pendingOfflineLinks.add(identifier));
+      batch.hunterIdentifiers.forEach((identifier) => pendingHunterLinks.add(identifier));
       pendingBatch = {
         identifiers: [...pendingOfflineLinks],
+        hunterIdentifiers: [...pendingHunterLinks],
         hasMore: batch.hasMore,
         jobCount: batch.jobCount
       };
       return;
     }
-    if (enabled) emitBatch(batch);
+    if (onlineOnlyEnabled || nonHunterEnabled) emitBatch(batch);
   }
 
-  function setEnabled(nextEnabled) {
+  function setJobFilterEnabled(nextOnlineOnlyEnabled, nextNonHunterEnabled) {
     stateKnown = true;
-    enabled = Boolean(nextEnabled);
-    if (enabled) emitBatch(pendingBatch);
+    onlineOnlyEnabled = Boolean(nextOnlineOnlyEnabled);
+    nonHunterEnabled = Boolean(nextNonHunterEnabled);
+    if (onlineOnlyEnabled || nonHunterEnabled) emitBatch(pendingBatch);
     pendingOfflineLinks.clear();
+    pendingHunterLinks.clear();
     pendingBatch = null;
   }
 
   function shouldInspect(method, url) {
-    return isTarget(method, url) && (!stateKnown || enabled);
+    return isTarget(method, url) && (!stateKnown || onlineOnlyEnabled || nonHunterEnabled);
   }
 
   function inspectResponse(response, method, url) {
@@ -97,7 +108,7 @@
   }
 
   function reportRequestStarted(method, url) {
-    if (!enabled || !isTarget(method, url)) return;
+    if ((!onlineOnlyEnabled && !nonHunterEnabled) || !isTarget(method, url)) return;
     emit({ type: 'LIEPIN_ONLINE_ONLY_JOB_REQUEST_STARTED' });
   }
 
@@ -143,7 +154,9 @@
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.data?.source !== 'job-chat-recorder-liepin-online-content') return;
     const command = event.data.command || {};
-    if (command.type === 'LIEPIN_ONLINE_ONLY_SET') setEnabled(command.enabled);
+    if (command.type === 'LIEPIN_ONLINE_ONLY_SET') {
+      setJobFilterEnabled(command.onlineOnlyEnabled, command.nonHunterEnabled);
+    }
   });
 
   emit({ type: 'LIEPIN_ONLINE_ONLY_HOOK_READY' });

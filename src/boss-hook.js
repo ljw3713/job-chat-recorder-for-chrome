@@ -32,8 +32,10 @@
 
   let onlineOnlyStateKnown = false;
   let onlineOnlyEnabled = false;
+  let nonHunterEnabled = false;
   const pendingOfflineJobIds = new Set();
-  let pendingOnlineOnlyBatch = null;
+  const pendingHunterJobIds = new Set();
+  let pendingJobFilterBatch = null;
   let latestRecommendedJobListUrl = '';
 
   function onlineOnlyBatchFromResponse(payload) {
@@ -43,8 +45,13 @@
       .filter((job) => job?.bossOnline === false)
       .map((job) => safeText(job?.encryptJobId).trim())
       .filter(Boolean);
+    const hunterEncryptJobIds = jobList
+      .filter((job) => Number(job?.goldHunter) === 1)
+      .map((job) => safeText(job?.encryptJobId).trim())
+      .filter(Boolean);
     return {
       encryptJobIds,
+      hunterEncryptJobIds,
       hasMore: payload.zpData.hasMore === true,
       jobCount: jobList.length
     };
@@ -55,6 +62,7 @@
     emit({
       type: 'BOSS_ONLINE_ONLY_JOB_BATCH',
       encryptJobIds: [...new Set(batch.encryptJobIds || [])].slice(0, 2000),
+      hunterEncryptJobIds: [...new Set(batch.hunterEncryptJobIds || [])].slice(0, 2000),
       hasMore: batch.hasMore === true,
       jobCount: Math.max(0, Number(batch.jobCount || 0))
     });
@@ -65,26 +73,30 @@
     if (!batch) return;
     if (!onlineOnlyStateKnown) {
       batch.encryptJobIds.forEach((identifier) => pendingOfflineJobIds.add(identifier));
-      pendingOnlineOnlyBatch = {
+      batch.hunterEncryptJobIds.forEach((identifier) => pendingHunterJobIds.add(identifier));
+      pendingJobFilterBatch = {
         encryptJobIds: [...pendingOfflineJobIds],
+        hunterEncryptJobIds: [...pendingHunterJobIds],
         hasMore: batch.hasMore,
         jobCount: batch.jobCount
       };
       return;
     }
-    if (onlineOnlyEnabled) emitOnlineOnlyBatch(batch);
+    if (onlineOnlyEnabled || nonHunterEnabled) emitOnlineOnlyBatch(batch);
   }
 
-  function setOnlineOnlyEnabled(nextEnabled) {
+  function setJobFilterEnabled(nextOnlineOnlyEnabled, nextNonHunterEnabled) {
     onlineOnlyStateKnown = true;
-    onlineOnlyEnabled = Boolean(nextEnabled);
-    if (onlineOnlyEnabled) emitOnlineOnlyBatch(pendingOnlineOnlyBatch);
+    onlineOnlyEnabled = Boolean(nextOnlineOnlyEnabled);
+    nonHunterEnabled = Boolean(nextNonHunterEnabled);
+    if (onlineOnlyEnabled || nonHunterEnabled) emitOnlineOnlyBatch(pendingJobFilterBatch);
     pendingOfflineJobIds.clear();
-    pendingOnlineOnlyBatch = null;
+    pendingHunterJobIds.clear();
+    pendingJobFilterBatch = null;
   }
 
   function shouldInspectRecommendedJobList(url) {
-    return isRecommendedJobListTarget(url) && (!onlineOnlyStateKnown || onlineOnlyEnabled);
+    return isRecommendedJobListTarget(url) && (!onlineOnlyStateKnown || onlineOnlyEnabled || nonHunterEnabled);
   }
 
   function inspectRecommendedJobListResponse(response, url) {
@@ -101,7 +113,7 @@
     } catch (_) {
       return;
     }
-    if (onlineOnlyEnabled) emit({ type: 'BOSS_ONLINE_ONLY_JOB_REQUEST_STARTED' });
+    if (onlineOnlyEnabled || nonHunterEnabled) emit({ type: 'BOSS_ONLINE_ONLY_JOB_REQUEST_STARTED' });
   }
 
   let httpToken = '';
@@ -643,7 +655,7 @@
     if (event.source !== window || event.data?.source !== 'job-chat-recorder-boss-content') return;
     const command = event.data.command || {};
     if (command.type === 'BOSS_ONLINE_ONLY_SET') {
-      setOnlineOnlyEnabled(command.enabled);
+      setJobFilterEnabled(command.onlineOnlyEnabled, command.nonHunterEnabled);
       return;
     }
     if (command.type === 'BOSS_AUTO_GREETING_SOURCE_GET') {

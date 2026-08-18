@@ -80,6 +80,7 @@ let sendProgressSaveQueue = Promise.resolve();
 let jobDetailProgressSaveQueue = Promise.resolve();
 let companyProfileSaveQueue = Promise.resolve();
 const ONLINE_ONLY_TABS_STORAGE_KEY = 'jobChatOnlineOnlyTabs';
+const NON_HUNTER_TABS_STORAGE_KEY = 'jobChatNonHunterTabs';
 const COMPANY_FILTER_TABS_STORAGE_KEY = 'jobChatCompanyFilterTabs';
 const COMPANY_FILTER_KEYWORDS_STORAGE_KEY = 'jobChatCompanyFilterKeywords';
 let companyFilterKeywordsSaveQueue = Promise.resolve();
@@ -744,6 +745,26 @@ async function setOnlineOnlyState(tabId, enabled) {
   return Boolean(enabled);
 }
 
+async function nonHunterState(tabId) {
+  const store = await chrome.storage.session.get([NON_HUNTER_TABS_STORAGE_KEY]);
+  const tabs = store[NON_HUNTER_TABS_STORAGE_KEY];
+  return Boolean(tabs && typeof tabs === 'object' && tabs[String(tabId)]);
+}
+
+async function setNonHunterState(tabId, enabled) {
+  const store = await chrome.storage.session.get([NON_HUNTER_TABS_STORAGE_KEY]);
+  const tabs = store[NON_HUNTER_TABS_STORAGE_KEY]
+    && typeof store[NON_HUNTER_TABS_STORAGE_KEY] === 'object'
+    && !Array.isArray(store[NON_HUNTER_TABS_STORAGE_KEY])
+    ? store[NON_HUNTER_TABS_STORAGE_KEY]
+    : {};
+  const key = String(tabId);
+  if (enabled) tabs[key] = true;
+  else delete tabs[key];
+  await chrome.storage.session.set({ [NON_HUNTER_TABS_STORAGE_KEY]: tabs });
+  return Boolean(enabled);
+}
+
 async function companyFilterState(tabId) {
   const store = await chrome.storage.session.get([COMPANY_FILTER_TABS_STORAGE_KEY]);
   const tabs = store[COMPANY_FILTER_TABS_STORAGE_KEY];
@@ -784,6 +805,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (!Object.prototype.hasOwnProperty.call(tabs, key)) return;
     delete tabs[key];
     await chrome.storage.session.set({ [ONLINE_ONLY_TABS_STORAGE_KEY]: tabs });
+  }).catch(() => {});
+  chrome.storage.session.get([NON_HUNTER_TABS_STORAGE_KEY]).then(async (store) => {
+    const tabs = store[NON_HUNTER_TABS_STORAGE_KEY];
+    const key = String(tabId);
+    if (!tabs || typeof tabs !== 'object' || !Object.prototype.hasOwnProperty.call(tabs, key)) return;
+    delete tabs[key];
+    await chrome.storage.session.set({ [NON_HUNTER_TABS_STORAGE_KEY]: tabs });
   }).catch(() => {});
   chrome.storage.session.get([COMPANY_FILTER_TABS_STORAGE_KEY]).then(async (store) => {
     const tabs = store[COMPANY_FILTER_TABS_STORAGE_KEY];
@@ -2152,6 +2180,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error('仅在线岗位过滤目前只支持 BOSS直聘和猎聘。');
         }
         return setOnlineOnlyState(tabId, Boolean(message.enabled));
+      })
+      .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_NON_HUNTER_GET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    nonHunterState(tabId)
+      .then((enabled) => sendResponse({ ok: true, enabled }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'JOB_CHAT_NON_HUNTER_SET') {
+    const tabId = Number(message.tabId || sender.tab?.id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      sendResponse({ ok: false, error: '没有找到当前标签页。' });
+      return;
+    }
+    chrome.tabs.get(tabId)
+      .then((tab) => {
+        if (message.enabled && !detectSupportedSite(tab?.url || '')) {
+          throw new Error('非猎头岗位过滤目前只支持 BOSS直聘和猎聘。');
+        }
+        return setNonHunterState(tabId, Boolean(message.enabled));
       })
       .then((enabled) => sendResponse({ ok: true, enabled }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
