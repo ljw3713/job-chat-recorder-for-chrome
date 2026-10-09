@@ -181,6 +181,27 @@
         background: #f3f4f6;
         color: #9ca3af;
       }
+      .language-options {
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .language-option {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #374151;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .language-option input {
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: #16a085;
+        cursor: pointer;
+      }
       .auto-message-button {
         margin-top: 10px;
         background: #7c3aed;
@@ -254,8 +275,21 @@
           placeholder="输入不想看到的关键字，用|分割"
         />
       </div>
+      <div class="language-options" role="radiogroup" aria-label="Language">
+        <label class="language-option">
+          <input id="languageCn" name="language" type="radio" value="cn" />
+          <span>CN</span>
+        </label>
+        <label class="language-option">
+          <input id="languageEn" name="language" type="radio" value="en" />
+          <span>EN</span>
+        </label>
+      </div>
       <div id="error" class="error"></div>
     </div>
+    <script src="src/locales/cn.js"></script>
+    <script src="src/locales/en.js"></script>
+    <script src="src/i18n.js"></script>
     <script src="src/runtime-config.js"></script>
     <script src="src/popup.js"></script>
   </body>

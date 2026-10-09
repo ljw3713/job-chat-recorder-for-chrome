@@ -105,6 +105,17 @@ let aiConfigSaveTimer = null;
 let apiKeySaveTimer = null;
 let renderedRunStatus = '';
 let renderedRunTabId = 0;
+let lastRenderedRun = null;
+
+function t(key, parameters) {
+  return globalThis.JobChatI18n.translate(key, parameters);
+}
+
+function filterOptionLabel(value) {
+  const name = String(value || '').trim();
+  if (globalThis.JobChatI18n.getLanguage() !== 'en') return name;
+  return globalThis.JobChatLocales?.en?.translateFilterOption(name) || name;
+}
 
 function isConfigEditingLocked() {
   return ['running', 'paused', 'refreshing', 'cancelling'].includes(renderedRunStatus);
@@ -287,25 +298,25 @@ function hasFilterOptions(options) {
 }
 
 function filterLabel(value, multiple = false) {
-  if (multiple) return value?.length ? value.map((item) => item.name).filter(Boolean).join('、') : '不限';
-  return value?.name || '不限';
+  if (multiple) return value?.length ? value.map((item) => filterOptionLabel(item.name)).filter(Boolean).join('、') : t('autoMessage.noLimit');
+  return value?.name ? filterOptionLabel(value.name) : t('autoMessage.noLimit');
 }
 
 function filterDefinitions() {
   if (!bossFilterOptions) return [];
   return [
-    { key: 'city', title: '城市', choices: bossFilterOptions.cities, searchable: true },
-    { key: 'jobType', title: '求职类型', choices: bossFilterOptions.jobTypes },
-    { key: 'salary', title: '推荐薪资', choices: bossFilterOptions.salaries },
-    { key: 'experience', title: '推荐经验', choices: bossFilterOptions.experiences, multiple: true },
-    { key: 'degree', title: '学历要求', choices: bossFilterOptions.degrees, multiple: true },
-    { key: 'industry', title: '公司行业', groups: bossFilterOptions.industries, multiple: true, searchable: true },
-    { key: 'scale', title: '公司规模', choices: bossFilterOptions.scales, multiple: true },
-    { key: 'stage', title: '融资阶段', choices: bossFilterOptions.stages, multiple: true, searchOnly: true },
-    { key: 'position', title: '职位类型', groups: bossFilterOptions.positions, multiple: true, searchable: true, searchOnly: true },
+    { key: 'city', title: t('autoMessage.filters.city'), choices: bossFilterOptions.cities, searchable: true },
+    { key: 'jobType', title: t('autoMessage.filters.jobType'), choices: bossFilterOptions.jobTypes },
+    { key: 'salary', title: t('autoMessage.filters.salary'), choices: bossFilterOptions.salaries },
+    { key: 'experience', title: t('autoMessage.filters.experience'), choices: bossFilterOptions.experiences, multiple: true },
+    { key: 'degree', title: t('autoMessage.filters.degree'), choices: bossFilterOptions.degrees, multiple: true },
+    { key: 'industry', title: t('autoMessage.filters.industry'), groups: bossFilterOptions.industries, multiple: true, searchable: true },
+    { key: 'scale', title: t('autoMessage.filters.scale'), choices: bossFilterOptions.scales, multiple: true },
+    { key: 'stage', title: t('autoMessage.filters.stage'), choices: bossFilterOptions.stages, multiple: true, searchOnly: true },
+    { key: 'position', title: t('autoMessage.filters.position'), groups: bossFilterOptions.positions, multiple: true, searchable: true, searchOnly: true },
     ...(bossLocationFilterOptions ? [
-      { key: 'multiBusinessDistrict', title: '区域', groups: bossLocationFilterOptions.districts, multiple: true, searchable: true, searchOnly: true, hierarchical: true },
-      { key: 'multiSubway', title: '地铁', groups: bossLocationFilterOptions.subways, multiple: true, searchable: true, searchOnly: true, hierarchical: true }
+      { key: 'multiBusinessDistrict', title: t('autoMessage.filters.district'), groups: bossLocationFilterOptions.districts, multiple: true, searchable: true, searchOnly: true, hierarchical: true },
+      { key: 'multiSubway', title: t('autoMessage.filters.subway'), groups: bossLocationFilterOptions.subways, multiple: true, searchable: true, searchOnly: true, hierarchical: true }
     ] : [])
   ];
 }
@@ -321,7 +332,8 @@ function createFilterOption(definition, item, selected) {
   input.checked = selected;
   input.disabled = bossRecommendFiltersLocked;
   const textNode = document.createElement('span');
-  textNode.textContent = item.name;
+  textNode.textContent = filterOptionLabel(item.name);
+  label.dataset.filterSearchText = `${item.name} ${textNode.textContent}`.toLowerCase();
   label.append(input, textNode);
   return label;
 }
@@ -357,12 +369,12 @@ function renderBossRecommendFilters(config) {
       const search = document.createElement('input');
       search.className = 'recommend-filter-search';
       search.type = 'search';
-      search.placeholder = `搜索${definition.title}`;
+      search.placeholder = t('autoMessage.searchFilter', { filter: definition.title });
       search.disabled = bossRecommendFiltersLocked;
       search.addEventListener('input', () => {
         const term = search.value.trim().toLowerCase();
         options.querySelectorAll('.recommend-filter-option').forEach((label) => {
-          label.hidden = Boolean(term) && !label.textContent.toLowerCase().includes(term);
+          label.hidden = Boolean(term) && !label.dataset.filterSearchText.includes(term);
         });
         options.querySelectorAll('.recommend-filter-group').forEach((group) => {
           group.hidden = [...group.querySelectorAll('.recommend-filter-option')].every((label) => label.hidden);
@@ -372,7 +384,7 @@ function renderBossRecommendFilters(config) {
     }
     const selectedCodes = new Set((definition.multiple ? filters[definition.key] : [filters[definition.key]])
       .filter(Boolean).map((item) => String(item.code)));
-    options.appendChild(createFilterOption(definition, { code: '0', name: '不限' }, selectedCodes.size === 0));
+    options.appendChild(createFilterOption(definition, { code: '0', name: t('autoMessage.noLimit') }, selectedCodes.size === 0));
     if (definition.groups) {
       definition.groups.forEach((group) => {
         const groupNode = document.createElement(definition.hierarchical ? 'details' : 'div');
@@ -380,7 +392,7 @@ function renderBossRecommendFilters(config) {
         groupNode.dataset.groupCode = group.code;
         const groupTitle = document.createElement(definition.hierarchical ? 'summary' : 'span');
         groupTitle.className = 'recommend-filter-group-title';
-        groupTitle.textContent = group.name;
+        groupTitle.textContent = filterOptionLabel(group.name);
         groupNode.appendChild(groupTitle);
         const childBox = definition.hierarchical ? document.createElement('div') : groupNode;
         if (definition.hierarchical) childBox.className = 'recommend-filter-subgroup-options';
@@ -893,21 +905,25 @@ function renderSentMessages(messages, aiMatchEnabled = false) {
     main.classList.toggle('ai-match-enabled', aiMatchEnabled);
     const company = document.createElement('span');
     company.className = 'sent-message-company';
+    if (entry.companyName) company.dataset.i18nSkip = 'true';
     company.textContent = String(entry.companyName || '未知公司').trim();
     company.tabIndex = 0;
     company.title = '悬浮查看公司详情';
     const job = document.createElement('span');
     job.className = 'sent-message-job';
+    if (entry.jobName) job.dataset.i18nSkip = 'true';
     job.textContent = String(entry.jobName || '未知岗位').trim();
     job.tabIndex = 0;
     job.title = '悬浮查看岗位详情';
     const salary = document.createElement('span');
     salary.className = 'sent-message-salary';
+    if (entry.salary) salary.dataset.i18nSkip = 'true';
     salary.textContent = String(entry.salary || '薪资未提供');
     main.append(company, job, salary);
     if (aiMatchEnabled) {
       const aiResult = document.createElement('span');
       aiResult.className = 'sent-message-ai-result';
+      if (entry.aiMatchResult) aiResult.dataset.i18nSkip = 'true';
       aiResult.textContent = String(entry.aiMatchResult || '匹配通过').trim();
       aiResult.tabIndex = 0;
       main.appendChild(aiResult);
@@ -931,10 +947,19 @@ function renderSentMessages(messages, aiMatchEnabled = false) {
 
 function renderRun(run) {
   if (!run) return false;
+  lastRenderedRun = run;
   renderedRunTabId = Number(run.tabId || 0);
   const target = Math.max(1, Number(run.config?.greetingCount || 1));
   const succeeded = Number(run.succeeded || 0);
-  const statusLabels = { running: '正在运行', paused: '已暂停', refreshing: '正在刷新重试', cancelling: '正在取消', cancelled: '已取消', completed: '已完成', failed: '运行失败' };
+  const statusLabels = {
+    running: t('autoMessage.running'),
+    paused: t('autoMessage.paused'),
+    refreshing: t('autoMessage.refreshing'),
+    cancelling: t('autoMessage.cancelling'),
+    cancelled: t('autoMessage.cancelled'),
+    completed: t('autoMessage.completed'),
+    failed: t('autoMessage.failed')
+  };
   renderedRunStatus = String(run.status || '');
   if (savedConfig) {
     renderConfigView(savedConfig);
@@ -943,17 +968,20 @@ function renderRun(run) {
     configView.hidden = true;
   }
   runView.hidden = false;
-  runState.textContent = statusLabels[run.status] || run.status || '准备中';
-  runTarget.textContent = `目标 ${target} 条`;
+  runState.textContent = statusLabels[run.status] || run.status || t('autoMessage.preparing');
+  runTarget.textContent = t('autoMessage.target', { count: target });
   runSucceeded.textContent = String(succeeded);
   runProcessed.textContent = String(Number(run.processed || 0));
   runSkipped.textContent = String(Number(run.skipped || 0));
   runFailed.textContent = String(Number(run.failed || 0));
-  runCurrent.textContent = [run.currentJobName, run.statusText].filter(Boolean).join(' · ');
+  const statusText = run.statusText === '当前推荐岗位已处理完毕'
+    ? t('autoMessage.recommendedJobsFinished')
+    : run.statusText;
+  runCurrent.textContent = [run.currentJobName, statusText].filter(Boolean).join(' · ');
   const startedAt = new Date(run.startedAt);
   sentMessagesDate.textContent = Number.isNaN(startedAt.getTime())
     ? ''
-    : `· ${startedAt.toLocaleString('zh-CN', { hour12: false })}`;
+    : `· ${startedAt.toLocaleString(globalThis.JobChatI18n.getLanguage() === 'cn' ? 'zh-CN' : 'en', { hour12: false })}`;
   renderSentMessages(run.sentMessages, Boolean(run.config?.aiMatchEnabled));
   sentMessagesPanel.hidden = false;
   const percentage = Math.min(100, Math.round(succeeded / target * 100));
@@ -967,7 +995,7 @@ function renderRun(run) {
   cancelRunButton.disabled = false;
   runActions.hidden = !executing;
   runControlButton.hidden = run.status === 'cancelling';
-  runControlButton.textContent = run.status === 'paused' ? '继续' : '暂停';
+  runControlButton.textContent = run.status === 'paused' ? t('autoMessage.resume') : t('autoMessage.pause');
   cancelRunButton.hidden = run.status !== 'paused';
   runActions.style.gridTemplateColumns = run.status === 'paused' ? 'minmax(0, 1fr) minmax(0, 1.5fr)' : '1fr';
   backToConfigButton.hidden = executing;
@@ -1269,7 +1297,7 @@ greetButton.addEventListener('click', async () => {
 });
 
 runControlButton.addEventListener('click', async () => {
-  const action = runControlButton.textContent === '继续' ? 'RESUME' : 'PAUSE';
+  const action = renderedRunStatus === 'paused' ? 'RESUME' : 'PAUSE';
   runControlButton.disabled = true;
   try {
     const response = await chrome.runtime.sendMessage({ type: `JOB_CHAT_AUTO_GREETING_${action}`, tabId: renderedRunTabId || activeTab?.id });
@@ -1395,6 +1423,11 @@ setInterval(() => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') refreshRunView().catch(() => {});
+});
+
+globalThis.JobChatI18n.onLanguageChanged(() => {
+  if (lastRenderedRun) renderRun(lastRenderedRun);
+  if (savedConfig) renderConfigView(savedConfig);
 });
 
 initialize();

@@ -111,6 +111,7 @@ const RATING_PROMPT_CLICK_THRESHOLD = Number.isFinite(configuredRatingPromptThre
 const RATING_STORE_URL = String(ratingPromptConfig.storeUrl || '');
 if (sendMessageLog) sendMessageLog.style.display = sendLogEnabled ? '' : 'none';
 const { normalizeText, formatDate, escapeHtml } = globalThis.JobChatUtils;
+const t = globalThis.JobChatI18n.translate;
 const {
   recruiterInfo,
   normalizeRecordDate,
@@ -143,8 +144,8 @@ function trackAnalyticsEvent(eventName, params = {}) {
 function setAnalyticsHint(configured) {
   if (!analyticsHint) return;
   analyticsHint.textContent = configured
-    ? '仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。'
-    : '当前构建尚未配置 GA4，不会发送统计数据。';
+    ? t('results.analyticsConfiguredHint')
+    : t('results.analyticsUnavailableHint');
 }
 
 async function initializeAnalyticsSetting() {
@@ -338,7 +339,9 @@ function exportDateTime(value) {
 }
 
 function messageStatusText(value) {
-  return normalizeMessageStatus(value) === '1' ? '已读' : '未读';
+  return normalizeMessageStatus(value) === '1'
+    ? t('results.messageRead')
+    : t('results.messageUnread');
 }
 
 function inferMessageStatus(record) {
@@ -422,16 +425,16 @@ function configurePageMode() {
     if (requestLogsBtn) requestLogsBtn.style.display = sendLogEnabled ? '' : 'none';
     if (importCsvBtn) importCsvBtn.style.display = 'none';
     if (mergeDuplicatesBtn) mergeDuplicatesBtn.style.display = 'none';
-    overviewBtn.textContent = '查看总记录';
-    pageHint.textContent = '同步结果页：可先删除不需要的记录，再保存到总记录。备注列可双击编辑，岗位列可悬浮查看详情。';
+    overviewBtn.textContent = t('results.viewAllRecords');
+    pageHint.textContent = t('results.syncPageHint');
   } else {
     saveBtn.style.display = 'none';
     if (requestLogsBtn) requestLogsBtn.style.display = 'none';
     if (importCsvBtn) importCsvBtn.style.display = '';
     if (mergeDuplicatesBtn) mergeDuplicatesBtn.style.display = '';
-    overviewBtn.textContent = '刷新总览';
+    overviewBtn.textContent = t('results.refreshOverview');
     pageHint.textContent = debugDataEnabled
-      ? '调试数据模式：JSON 和 CSV 会包含完整内部数据；CSV 导入会按唯一索引新增记录或覆盖已有记录的内部数据。'
+      ? t('results.debugDataHint')
       : '';
     if (sendMessageBtn) sendMessageBtn.style.display = '';
   }
@@ -758,7 +761,7 @@ function updateMeta() {
   const conversationText = conversation && Number(conversation.requested || 0)
     ? `完整会话：请求 ${conversation.requested || 0} 条，成功 ${conversation.success || 0} 条，失败 ${conversation.failed || 0} 条，跳过 ${conversation.skipped || 0} 条`
     : '';
-  const title = mode === 'sync' ? (latestData?.siteTitle || '同步结果') : '招聘沟通记录总览';
+  const title = mode === 'sync' ? (latestData?.siteTitle || t('results.syncTitle')) : t('results.overviewTitle');
   pageHeading.textContent = title;
   document.title = title;
 
@@ -767,12 +770,23 @@ function updateMeta() {
     const detailHtml = detailText
       ? `<div class="sync-meta-details">${detailText.replace(/(\d+)/g, '<strong>$1</strong>')}</div>`
       : '';
-    meta.innerHTML = `本次同步共 ${boldNumber(total)} 条 · 当前显示：${boldNumber(visible)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')} · 来源：${escapeHtml(source)}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${detailHtml}`;
+    meta.innerHTML = `${t('results.syncMeta', {
+      total: boldNumber(total),
+      visible: boldNumber(visible),
+      time: escapeHtml(latestData?.extractedAt || '-'),
+      source: escapeHtml(source)
+    })}${syncText.replace(/(\d+)/g, '<strong>$1</strong>')}${detailHtml}`;
     return;
   }
 
   const todaySynced = allRecords.filter(isSyncedToday).length;
-  meta.innerHTML = `总记录共 ${boldNumber(total)} 条 · 筛选结果：${boldNumber(visible)} 条 · 本页：${boldNumber(pageRecords.length)} 条 · 今日同步 ${boldNumber(todaySynced)} 条 · 最近同步时间：${escapeHtml(latestData?.extractedAt || '-')}`;
+  meta.innerHTML = t('results.overviewMeta', {
+    total: boldNumber(total),
+    visible: boldNumber(visible),
+    page: boldNumber(pageRecords.length),
+    today: boldNumber(todaySynced),
+    time: escapeHtml(latestData?.extractedAt || '-')
+  });
 }
 
 function updateJsonBox() {
@@ -1555,16 +1569,16 @@ function renderTable() {
   const tableHeader = `
     <thead>
       <tr>
-        <th class="select"><input id="selectAllRows" type="checkbox" title="全选当前页面" /></th>
-        <th class="source">来源</th>
-        <th class="company">公司</th>
-        <th class="job">岗位 <label class="job-sync-filter"><input id="jobDetailNotSyncedFilter" type="checkbox" /> 未同步</label></th>
-        <th class="date">申请时间</th>
-        <th class="date">更新时间</th>
-        <th class="note">备注</th>
-        <th class="recruiter">招聘者</th>
-        <th class="status">状态</th>
-        <th class="message">原消息</th>
+        <th class="select"><input id="selectAllRows" type="checkbox" title="${escapeHtml(t('results.selectAllCurrentPage'))}" /></th>
+        <th class="source">${escapeHtml(t('results.source'))}</th>
+        <th class="company">${escapeHtml(t('results.company'))}</th>
+        <th class="job">${escapeHtml(t('results.job'))} <label class="job-sync-filter"><input id="jobDetailNotSyncedFilter" type="checkbox" /> ${escapeHtml(t('results.jobNotSynced'))}</label></th>
+        <th class="date">${escapeHtml(t('results.applicationDate'))}</th>
+        <th class="date">${escapeHtml(t('results.updatedDate'))}</th>
+        <th class="note">${escapeHtml(t('results.note'))}</th>
+        <th class="recruiter">${escapeHtml(t('results.recruiter'))}</th>
+        <th class="status">${escapeHtml(t('results.status'))}</th>
+        <th class="message">${escapeHtml(t('results.originalMessage'))}</th>
       </tr>
     </thead>`;
   if (!records.length) {
@@ -2187,3 +2201,8 @@ chrome.runtime.sendMessage({
 initializeAnalyticsSetting();
 configurePageMode();
 loadAndRenderLatest();
+
+globalThis.JobChatI18n.onLanguageChanged(() => {
+  configurePageMode();
+  renderTable();
+});

@@ -12,6 +12,8 @@ const nonHunterText = document.getElementById('nonHunterText');
 const companyFilterRow = document.getElementById('companyFilterRow');
 const companyFilterCheckbox = document.getElementById('companyFilterCheckbox');
 const companyFilterKeywordsInput = document.getElementById('companyFilterKeywords');
+const languageCn = document.getElementById('languageCn');
+const languageEn = document.getElementById('languageEn');
 const autoMessageBtn = document.getElementById('autoMessageBtn');
 let activeTab = null;
 
@@ -19,6 +21,20 @@ const SUPPORTED_SITES = [
   { key: 'boss', hostPattern: /(^|\.)zhipin\.com$/i, source: 'BOSS直聘' },
   { key: 'liepin', hostPattern: /(^|\.)liepin\.com$/i, source: '猎聘' }
 ];
+
+function t(key, parameters) {
+  return globalThis.JobChatI18n.translate(key, parameters);
+}
+
+function syncLanguageSelection(language) {
+  languageCn.checked = language === 'cn';
+  languageEn.checked = language === 'en';
+}
+
+async function initializeLanguageSelection() {
+  await globalThis.JobChatI18n.init();
+  syncLanguageSelection(globalThis.JobChatI18n.getLanguage());
+}
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -41,7 +57,7 @@ function supportedSiteNames() {
 function setLoading(isLoading) {
   document.body.classList.toggle('loading', isLoading);
   btn.disabled = isLoading;
-  btnText.textContent = isLoading ? '正在同步，请稍候...' : '同步当前聊天记录';
+  btnText.textContent = isLoading ? t('popup.syncing') : t('popup.syncCurrent');
 }
 
 function setOnlineOnlyAvailability(site, enabled = false) {
@@ -87,7 +103,7 @@ async function refreshCurrentSiteHint() {
   btn.disabled = false;
 
   if (site) {
-    currentSiteBox.textContent = `当前网站：${site.source}，可以提取。`;
+    currentSiteBox.textContent = t('popup.currentSite', { site: site.source });
     currentSiteBox.className = 'site ok';
     const [onlineOnlyResponse, nonHunterResponse, companyFilterResponse] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'JOB_CHAT_ONLINE_ONLY_GET', tabId: tab.id }),
@@ -103,7 +119,7 @@ async function refreshCurrentSiteHint() {
     );
     setAutoMessageAvailability(site);
   } else {
-    currentSiteBox.textContent = `当前网站：暂不支持。目前支持 ${supportedSiteNames()}。`;
+    currentSiteBox.textContent = t('popup.unsupportedSite', { sites: supportedSiteNames() });
     currentSiteBox.className = 'site warn';
     setOnlineOnlyAvailability(null, false);
     setNonHunterAvailability(null, false);
@@ -119,14 +135,14 @@ onlineOnlyCheckbox.addEventListener('change', async () => {
   try {
     const tab = activeTab || await getActiveTab();
     if (!tab?.id || !detectSupportedSite(tab.url || '')) {
-      throw new Error('请先打开 BOSS直聘或猎聘页面。');
+      throw new Error(t('popup.openSupportedSite'));
     }
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_ONLINE_ONLY_SET',
       tabId: tab.id,
       enabled
     });
-    if (!response?.ok) throw new Error(response?.error || '无法保存仅在线设置。');
+    if (!response?.ok) throw new Error(response?.error || t('popup.saveOnlineOnlyFailed'));
     onlineOnlyCheckbox.checked = Boolean(response.enabled);
   } catch (error) {
     onlineOnlyCheckbox.checked = !enabled;
@@ -143,14 +159,14 @@ nonHunterCheckbox.addEventListener('change', async () => {
   try {
     const tab = activeTab || await getActiveTab();
     if (!tab?.id || !detectSupportedSite(tab.url || '')) {
-      throw new Error('请先打开 BOSS直聘或猎聘页面。');
+      throw new Error(t('popup.openSupportedSite'));
     }
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_NON_HUNTER_SET',
       tabId: tab.id,
       enabled
     });
-    if (!response?.ok) throw new Error(response?.error || '无法保存非猎头筛选设置。');
+    if (!response?.ok) throw new Error(response?.error || t('popup.saveNonHunterFailed'));
     nonHunterCheckbox.checked = Boolean(response.enabled);
   } catch (error) {
     nonHunterCheckbox.checked = !enabled;
@@ -167,14 +183,14 @@ companyFilterCheckbox.addEventListener('change', async () => {
   try {
     const tab = activeTab || await getActiveTab();
     if (!tab?.id || !detectSupportedSite(tab.url || '')) {
-      throw new Error('请先打开 BOSS直聘或猎聘页面。');
+      throw new Error(t('popup.openSupportedSite'));
     }
     const response = await chrome.runtime.sendMessage({
       type: 'JOB_CHAT_COMPANY_FILTER_SET_ENABLED',
       tabId: tab.id,
       enabled
     });
-    if (!response?.ok) throw new Error(response?.error || '无法保存关键字过滤设置。');
+    if (!response?.ok) throw new Error(response?.error || t('popup.saveCompanyFilterFailed'));
     companyFilterCheckbox.checked = Boolean(response.enabled);
   } catch (error) {
     companyFilterCheckbox.checked = !enabled;
@@ -189,10 +205,28 @@ companyFilterKeywordsInput.addEventListener('input', () => {
     type: 'JOB_CHAT_COMPANY_FILTER_SET_KEYWORDS',
     keywords: companyFilterKeywordsInput.value
   }).then((response) => {
-    if (!response?.ok) throw new Error(response?.error || '无法保存关键字。');
+    if (!response?.ok) throw new Error(response?.error || t('popup.saveKeywordsFailed'));
   }).catch((error) => {
     errorBox.textContent = error?.message || String(error);
   });
+});
+
+[languageCn, languageEn].forEach((radio) => {
+  radio.addEventListener('change', async () => {
+    if (!radio.checked) return;
+    errorBox.textContent = '';
+    try {
+      await globalThis.JobChatI18n.setLanguage(radio.value);
+      syncLanguageSelection(globalThis.JobChatI18n.getLanguage());
+    } catch (error) {
+      errorBox.textContent = error?.message || String(error);
+    }
+  });
+});
+
+globalThis.JobChatI18n.onLanguageChanged((language) => {
+  syncLanguageSelection(language);
+  refreshCurrentSiteHint().catch(() => {});
 });
 
 autoMessageBtn.addEventListener('click', async (event) => {
@@ -248,7 +282,9 @@ btn.addEventListener('click', async () => {
   }
 });
 
-refreshCurrentSiteHint();
+initializeLanguageSelection().then(refreshCurrentSiteHint).catch((error) => {
+  errorBox.textContent = error?.message || String(error);
+});
 chrome.runtime.sendMessage({
   type: 'JOB_CHAT_ANALYTICS_ACTIVE',
   pageMode: 'popup'

@@ -908,7 +908,7 @@
             </select>
           </label>
         </div>
-        <div class="hint toolbar-hint">
+        <div class="hint toolbar-hint" data-i18n="results.overviewHint">
           记录会自动保存在浏览器本地；同公司、同岗位、同招聘者会合并。备注列可双击编辑，公司、岗位和原消息列可悬浮查看详情。
         </div>
       </div>
@@ -917,7 +917,7 @@
       <div>
         <label>
           <input id="analyticsEnabled" type="checkbox" />
-          允许匿名使用统计。仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。
+          <span data-i18n="results.analyticsConsent">允许匿名使用统计。仅统计功能使用数量、版本、地区和设备类型，不上传聊天或账号信息。</span>
         </label>
         <!-- <span id="analyticsHint" class="analytics-hint">
 
@@ -1119,6 +1119,9 @@ loading...</pre
         </div>
       </div>
     </div>
+    <script src="src/locales/cn.js"></script>
+    <script src="src/locales/en.js"></script>
+    <script src="src/i18n.js"></script>
     <script src="src/runtime-config.js"></script>
     <script src="src/shared-utils.js"></script>
     <script src="src/shared-records.js"></script>

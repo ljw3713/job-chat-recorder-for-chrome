@@ -1,7 +1,7 @@
 {
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "node scripts/check-extension.js",
+    "check": "node scripts/check-extension.js && node scripts/check-i18n.js",
     "build": "node scripts/package-extension.js --browser=chrome --skip-ga4",
     "build:edge": "node scripts/package-extension.js --browser=edge --skip-ga4",
     "build:all": "node scripts/package-extension.js --browser=all --skip-ga4",
